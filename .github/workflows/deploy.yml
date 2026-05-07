@@ -2,7 +2,7 @@ name: Update Server
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 jobs:
@@ -40,10 +40,10 @@ jobs:
               cd "$APP_DIR"
             fi
 
-            # Ensure run.sh is executable
-            chmod +x run.sh
+            # Ensure docker.sh is executable
+            chmod +x docker.sh
 
             echo "Running deployment script..."
-            ./run.sh
+            ./docker.sh
 
             echo "Deployment successful!"
