@@ -23,24 +23,85 @@
 
 ## Requirements
 
-- Docker (installed and running)
-- Node.js and npm (for development only)
+- Node.js (v18+) and npm
+- Docker (installed and running, only required while judging)
 
 ## Quickstart
 
-- Linux/macOS/Windows (WSL)
+### 1. Installation
+The easiest way to install CoJudge without dealing with NPM permission issues is to run our install script:
+
 ```bash
 git clone https://github.com/cojudge/cojudge
 cd cojudge
+./install.sh
+source ~/.zshrc # or ~/.bashrc, depending on your shell
+```
+
+This will install dependencies, build the app, and add a `cojudge` alias to your shell configuration.
+
+### 2. Usage
+Simply run `cojudge` to start the server and open it in your browser:
+```bash
+cojudge
+```
+
+### CLI Commands
+| Command | Description |
+| --- | --- |
+| `cojudge` | Start server & open browser |
+| `cojudge <slug> <file>` | Open specific problem with starter file |
+| `cojudge list` | List all available problem slugs |
+| `cojudge mark <slug>` | Mark a problem as solved |
+| `cojudge unmark <slug>` | Unmark a problem as solved |
+| `cojudge -p, --port <port>` | Start server on specific port (default 5375) |
+| `cojudge -s, --status` | Check if server is running |
+| `cojudge -u, --update` | Update to latest version (git pull) |
+| `cojudge -l, --logs` | Stream the server logs |
+| `cojudge -k, --kill` | Stop the server |
+| `cojudge -v, --version` | Show current version & age |
+| `cojudge -h, --help` | Show help message |
+
+**Note:** You can browse problems and organize solutions without Docker. Docker is only required when you actually want to `Run` or `Submit` code.
+
+### Manual Global Installation (If you prefer)
+If you'd rather install it globally via NPM and have the necessary permissions:
+```bash
+npm install -g .
+```
+
+### Troubleshooting Installation (Permission Denied)
+
+If you encounter an `EACCES` error when running `npm install -g .` (especially on macOS with Homebrew), it's likely because your user doesn't have permissions to write to the global `node_modules` folder.
+
+You can fix this by either:
+1. **Using sudo** (not recommended but fast):
+   ```bash
+   sudo npm install -g .
+   ```
+2. **Fixing npm permissions** (recommended): Follow the [official npm guide](https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally) to change npm's default directory.
+3. **Using the install script** (easiest): Use `./install.sh` as described in the Quickstart section.
+
+## Alternative: Manual Run
+If you don't want to install the CLI:
+```bash
 chmod +x run.sh
 ./run.sh
 ```
+This starts the app at: http://localhost:5375.
 
-This builds the image, starts the container, and prints the link: http://localhost:5375
+## Running with Docker (Containerized)
+
+If you prefer to run the entire application inside a Docker container:
+```bash
+chmod +x docker.sh
+./docker.sh
+```
+This builds a local image named `cojudge` and runs it, mapping the host Docker socket so the judge can spawn sibling containers.
 
 ## Development
 
-1) Add $USER to docker group
+1) Add $USER to docker group (if using Docker)
 ```bash
 sudo usermod -aG docker "$USER"
 newgrp docker
@@ -121,7 +182,7 @@ Some Docker environments on macOS (like Colima) use a non-default Docker socket 
 **Example:**
 ```bash
 # Find your socket path by running `colima status`
-HOST_DOCKER_SOCKET="/Users/your-user/.colima/default/docker.sock" ./run.sh
+HOST_DOCKER_SOCKET="/Users/your-user/.colima/default/docker.sock" ./docker.sh
 ```
 
 ## Contact

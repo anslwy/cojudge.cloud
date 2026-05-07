@@ -1,0 +1,480 @@
+#!/usr/bin/env node
+
+import { spawn, execSync } from "child_process";
+import { fileURLToPath } from "url";
+import path from "path";
+import fs from "fs";
+import os from "os";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const rootDir = path.resolve(__dirname, "..");
+
+const args = process.argv.slice(2);
+
+function getParam(param) {
+  const index = args.findIndex((arg) => arg === param);
+  if (index !== -1 && args[index + 1]) {
+    return args[index + 1];
+  }
+  return null;
+}
+
+const PORT = getParam("-p") || getParam("--port") || process.env.PORT || 5375;
+
+function getPIDs(port) {
+  try {
+    const stdout = execSync(`lsof -i :${port} -t`).toString().trim();
+    return stdout ? stdout.split("\n") : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function getLogFile() {
+  const homeConfigDir = path.join(os.homedir(), ".cojudge");
+  if (!fs.existsSync(homeConfigDir)) {
+    try {
+      fs.mkdirSync(homeConfigDir, { recursive: true });
+    } catch (e) {
+      return path.join(rootDir, "cojudge.log");
+    }
+  }
+  return path.join(homeConfigDir, "cojudge.log");
+}
+
+function getProgressFile() {
+  const homeProgressFile = path.join(os.homedir(), ".cojudge", "progress.json");
+  const localProgressFile = path.join(rootDir, ".cojudge_progress.json");
+
+  // If local exists but home doesn't, we might want to migrate or use local
+  if (fs.existsSync(localProgressFile) && !fs.existsSync(homeProgressFile)) {
+    return localProgressFile;
+  }
+
+  const homeConfigDir = path.join(os.homedir(), ".cojudge");
+  if (!fs.existsSync(homeConfigDir)) {
+    try {
+      fs.mkdirSync(homeConfigDir, { recursive: true });
+    } catch (e) {
+      return localProgressFile;
+    }
+  }
+
+  return homeProgressFile;
+}
+
+function loadProgress() {
+  const progressFile = getProgressFile();
+  if (fs.existsSync(progressFile)) {
+    try {
+      return JSON.parse(fs.readFileSync(progressFile, "utf8"));
+    } catch (e) {
+      return { solvedSlugs: [] };
+    }
+  }
+  return { solvedSlugs: [] };
+}
+
+function saveProgress(progress) {
+  const progressFile = getProgressFile();
+  fs.writeFileSync(progressFile, JSON.stringify(progress, null, 2), "utf8");
+}
+
+function showHelp() {
+  console.log(`
+CoJudge CLI - Offline-first competitive programming platform
+
+Usage:
+  cojudge [options]              Start the server and open in browser
+  cojudge start <slug> <file>    Open a specific problem or playground with a file
+  cojudge list                   List all available problem slugs
+  cojudge mark <slug>            Mark a problem as solved
+  cojudge unmark <slug>          Unmark a problem as solved
+  cojudge -p, --port <number>    Specify port (default: 5375)
+  cojudge -v, --version          Show current version and date
+  cojudge -u, --update           Update cojudge to the latest version
+  cojudge -s, --status           Show if the server is running
+  cojudge -l, --logs             Stream the server logs
+  cojudge -k, --kill             Stop the server
+  cojudge -h, --help             Show this help message
+
+Examples:
+  cojudge start two-sum Solution.java
+  cojudge start playground my-script.py
+  cojudge mark two-sum
+`);
+}
+
+function getLangFromExt(ext) {
+  switch (ext.toLowerCase()) {
+    case ".java":
+      return "java";
+    case ".py":
+      return "python";
+    case ".cpp":
+    case ".cc":
+    case ".hpp":
+    case ".h":
+      return "cpp";
+    case ".rs":
+      return "rust";
+    case ".cs":
+      return "csharp";
+    default:
+      return "plaintext";
+  }
+}
+
+function openBrowser(port, path = "") {
+  const url = `http://localhost:${port}${path}`;
+  console.log(`Opening ${url} in browser...`);
+  const start =
+    process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? "start"
+        : "xdg-open";
+  try {
+    spawn(start, [url], { detached: true }).unref();
+  } catch (e) {
+    console.error(`Failed to open browser: ${e.message}`);
+  }
+}
+
+function startServer(callback) {
+  const logFile = getLogFile();
+  console.log(
+    `Starting cojudge on port ${PORT}... (this might take a moment if building)`,
+  );
+  console.log(`Logs are being written to ${logFile}`);
+
+  try {
+    const out = fs.openSync(logFile, "a");
+    const err = fs.openSync(logFile, "a");
+
+    const child = spawn("sh", [path.join(rootDir, "run.sh")], {
+      cwd: rootDir,
+      env: { ...process.env, PORT: PORT.toString() },
+      stdio: ["ignore", out, err],
+      detached: true,
+    });
+    child.unref();
+
+    console.log(`Waiting for server to start on port ${PORT}...`);
+    let attempts = 0;
+    const maxAttempts = 60;
+    const interval = setInterval(() => {
+      attempts++;
+      if (getPIDs(PORT).length > 0) {
+        clearInterval(interval);
+        console.log("Server started!");
+        if (callback) callback();
+        process.exit(0);
+      }
+      if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        console.log(
+          `Server is taking too long to start. Check logs with 'cojudge -l'.`,
+        );
+        process.exit(1);
+      }
+    }, 1000);
+  } catch (e) {
+    console.error(`Failed to start server: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+function printVersion() {
+  try {
+    const commit = execSync('git log -1 --format="%h"', { cwd: rootDir })
+      .toString()
+      .trim();
+    const date = execSync(
+      'git log -1 --format="%cd" --date=format:"%Y-%m-%d %H:%M:%S"',
+      { cwd: rootDir },
+    )
+      .toString()
+      .trim();
+    console.log(`Cojudge version: ${commit} (${date})`);
+    console.log(`Installed at: ${rootDir}`);
+  } catch (e) {
+    console.log("Cojudge version unknown");
+    console.log(`Installed at: ${rootDir}`);
+  }
+}
+
+function updateRepo() {
+  console.log("Updating cojudge...");
+  try {
+    execSync("git pull", { cwd: rootDir, stdio: "inherit" });
+    console.log("Installing dependencies and building...");
+    execSync("npm install", { cwd: rootDir, stdio: "inherit" });
+    execSync("npm run build", { cwd: rootDir, stdio: "inherit" });
+    console.log("Update complete.");
+  } catch (e) {
+    console.error("Update failed.");
+  }
+}
+
+function streamLogs() {
+  const logFile = getLogFile();
+  if (fs.existsSync(logFile)) {
+    console.log(`Streaming logs from ${logFile}...`);
+    const tail = spawn("tail", ["-f", logFile], { stdio: "inherit" });
+    process.on("SIGINT", () => {
+      tail.kill();
+      process.exit();
+    });
+  } else {
+    console.log("No log file found.");
+  }
+}
+
+function killServer() {
+  const pids = getPIDs(PORT);
+  if (pids.length > 0) {
+    console.log(`Stopping cojudge on port ${PORT}...`);
+    pids.forEach((pid) => {
+      try {
+        process.kill(parseInt(pid), "SIGTERM");
+      } catch (e) {}
+    });
+    console.log("Stopped.");
+  } else {
+    console.log(`cojudge is not running on port ${PORT}.`);
+  }
+}
+
+function getDifficultyOrder(difficulty) {
+  const d = (difficulty || "").toLowerCase();
+  if (d === "easy") return 1;
+  if (d === "medium") return 2;
+  if (d === "hard") return 3;
+  return 4;
+}
+
+function listProblems() {
+  const problemsPath = path.join(rootDir, "problems");
+  const blind75Path = path.join(
+    rootDir,
+    "courses",
+    "blind75",
+    "courseinfo.json",
+  );
+
+  try {
+    let orderedSlugs = [];
+    if (fs.existsSync(blind75Path)) {
+      const courseInfo = JSON.parse(fs.readFileSync(blind75Path, "utf8"));
+      const categories = courseInfo["category-order"] || [];
+      const categoryProblems = courseInfo["problems-of-category"] || {};
+
+      categories.forEach((cat) => {
+        const slugs = categoryProblems[cat] || [];
+        // For each category, we want to sort by difficulty
+        const problemsWithMetadata = slugs.map((slug) => {
+          const metaPath = path.join(problemsPath, slug, "metadata.json");
+          let difficulty = "unknown";
+          let title = slug;
+          if (fs.existsSync(metaPath)) {
+            try {
+              const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+              difficulty = meta.difficulty || "unknown";
+              title = meta.title || slug;
+            } catch (e) {}
+          }
+          return { slug, difficulty, title };
+        });
+
+        problemsWithMetadata.sort((a, b) => {
+          const diffA = getDifficultyOrder(a.difficulty);
+          const diffB = getDifficultyOrder(b.difficulty);
+          if (diffA !== diffB) return diffA - diffB;
+          // IMPORTANT: If difficulties are the same, order by the title (alphabetical)
+          return a.title.localeCompare(b.title);
+        });
+
+        orderedSlugs.push(...problemsWithMetadata.map((p) => p.slug));
+      });
+    } else {
+      // Fallback to alphabetical if blind75 info not found
+      orderedSlugs = fs
+        .readdirSync(problemsPath)
+        .filter((f) => {
+          return fs.statSync(path.join(problemsPath, f)).isDirectory();
+        })
+        .sort();
+    }
+
+    const progress = loadProgress();
+    const solved = new Set(progress.solvedSlugs || []);
+
+    console.log(
+      "Available problem slugs (ordered by Blind 75 categories & difficulty):",
+    );
+    orderedSlugs.forEach((s) => {
+      const mark = solved.has(s) ? "✅" : "  ";
+      console.log(`  ${mark} ${s}`);
+    });
+
+    // Also check for problems that might not be in blind 75 list but exist in folders
+    const allFolders = fs.readdirSync(problemsPath).filter((f) => {
+      return fs.statSync(path.join(problemsPath, f)).isDirectory();
+    });
+    const extraSlugs = allFolders
+      .filter((f) => !orderedSlugs.includes(f))
+      .sort();
+
+    if (extraSlugs.length > 0) {
+      console.log("\nOther problems:");
+      extraSlugs.forEach((s) => {
+        const mark = solved.has(s) ? "✅" : "  ";
+        console.log(`  ${mark} ${s}`);
+      });
+    }
+
+    const totalCount = orderedSlugs.length + extraSlugs.length;
+    console.log(
+      `\nProgress: ${solved.size}/${totalCount} (${Math.round((solved.size / totalCount) * 100)}%)`,
+    );
+  } catch (e) {
+    console.error("Could not list problems:", e.message);
+  }
+}
+
+function markProblem(slug, solvedValue) {
+  const problemsPath = path.join(rootDir, "problems", slug);
+  if (!fs.existsSync(problemsPath)) {
+    console.error(`Error: Problem slug '${slug}' not found.`);
+    return;
+  }
+
+  const progress = loadProgress();
+  const solvedSet = new Set(progress.solvedSlugs || []);
+  if (solvedValue) {
+    solvedSet.add(slug);
+    console.log(`Marked '${slug}' as solved.`);
+  } else {
+    solvedSet.delete(slug);
+    console.log(`Unmarked '${slug}' as solved.`);
+  }
+  progress.solvedSlugs = Array.from(solvedSet);
+  saveProgress(progress);
+}
+
+function handleStart(argsToUse) {
+  const slug = argsToUse[1];
+  const filename = argsToUse[2];
+  let browserPath = "";
+
+  if (slug) {
+    if (slug === "playground") {
+      browserPath = "/playground";
+    } else {
+      browserPath = `/problems/${slug}`;
+    }
+
+    if (filename) {
+      if (!fs.existsSync(filename)) {
+        console.error(`Error: File '${filename}' does not exist.`);
+        process.exit(1);
+      }
+
+      const ext = path.extname(filename);
+      const lang = getLangFromExt(ext);
+      const name = path.basename(filename); // Keep the extension
+      let content = "";
+
+      try {
+        content = fs.readFileSync(filename, "utf8");
+      } catch (e) {
+        console.warn(`Could not read file ${filename}: ${e.message}`);
+      }
+
+      browserPath += `?tabs=${encodeURIComponent(JSON.stringify([{ name, lang, content }]))}`;
+    }
+  }
+
+  const pids = getPIDs(PORT);
+  if (pids.length > 0) {
+    openBrowser(PORT, browserPath);
+  } else {
+    startServer(() => openBrowser(PORT, browserPath));
+  }
+}
+
+async function main() {
+  const action = args[0];
+
+  if (action === "start") {
+    handleStart(args);
+    return;
+  }
+
+  if (action === "list") {
+    listProblems();
+    return;
+  }
+
+  if (action === "mark") {
+    const slug = args[1];
+    if (!slug) {
+      console.error("Error: Please specify a problem slug to mark.");
+      return;
+    }
+    markProblem(slug, true);
+    return;
+  }
+
+  if (action === "unmark") {
+    const slug = args[1];
+    if (!slug) {
+      console.error("Error: Please specify a problem slug to unmark.");
+      return;
+    }
+    markProblem(slug, false);
+    return;
+  }
+
+  if (!action || action === "-p" || action === "--port") {
+    const pids = getPIDs(PORT);
+    if (pids.length > 0) {
+      console.log(
+        `CoJudge is already running on port ${PORT} (PID: ${pids.join(", ")})`,
+      );
+      openBrowser(PORT);
+    } else {
+      startServer(() => openBrowser(PORT));
+    }
+  } else if (action === "-v" || action === "--version") {
+    printVersion();
+  } else if (action === "-u" || action === "--update") {
+    updateRepo();
+  } else if (action === "-s" || action === "--status") {
+    const pids = getPIDs(PORT);
+    if (pids.length > 0) {
+      console.log(
+        `cojudge is RUNNING (PID: ${pids.join(", ")}) on port ${PORT}`,
+      );
+    } else {
+      console.log(`cojudge is NOT RUNNING on port ${PORT}`);
+    }
+  } else if (action === "-l" || action === "--logs") {
+    streamLogs();
+  } else if (action === "-k" || action === "--kill") {
+    killServer();
+  } else if (action === "-h" || action === "--help") {
+    showHelp();
+  } else {
+    // If first arg isn't a flag, assume it's a slug or 'start' was omitted
+    if (action && !action.startsWith("-")) {
+      handleStart(["start", ...args]);
+      return;
+    }
+    console.log(`Unknown command: ${action}`);
+    showHelp();
+  }
+}
+
+main();
