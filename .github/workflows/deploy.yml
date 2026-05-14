@@ -41,9 +41,12 @@ jobs:
             fi
 
             # Ensure docker.sh is executable
-            chmod +x docker.sh
+            chmod +x install.sh
 
-            echo "Running deployment script..."
-            ./docker.sh
+            echo "Running installation script..."
+            ./install.sh
+
+            cojudge -u
+            cojudge
 
             echo "Deployment successful!"
