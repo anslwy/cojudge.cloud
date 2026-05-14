@@ -1,6 +1,8 @@
 > Solve classic algorithmic problems without the internet or having to deal with installing runtimes. No discussion forum, no LLM assistant, not even the internet. Solve the curated list with just you, the problem and the judge.
 
-![Light Mode](./screenshots/lightmode.png)
+|![Web UI](/screenshots/lightmode.png) | ![CLI](/screenshots/cli.png) |
+|:---:|:---:|
+| localhost web | CLI |
 
 ![Demo](./screenshots/ide.gif)
 
@@ -14,8 +16,8 @@
 - Docker sandboxes: consistent, isolated runs across machines
 - LeetCode-style problem packs with statements and tests
 - Simple & fast web UI (SvelteKit) with in-browser editor and light/dark mode support
-- Multiple languages support (Java/Python/C++)
-- Code Playground: Run code snippets in Java, Python, or C++ without a problem context
+- Multiple languages support (Java/Python/C++/Rust/C#)
+- Code Playground: Run code snippets in Java, Python, C++, Rust, or C# without a problem context
 - Extensible: add new problems by dropping folders in `problems/`
 - Persistent Code & Progress Tracking via Local Storage
 - Browser-like tabs to organize your local solutions
@@ -31,11 +33,20 @@
 ### 1. Installation
 The easiest way to install CoJudge without dealing with NPM permission issues is to run our install script:
 
+#### Mac / Linux
 ```bash
 git clone https://github.com/cojudge/cojudge
 cd cojudge
 ./install.sh
 source ~/.zshrc # or ~/.bashrc, depending on your shell
+```
+
+#### Windows Powershell
+```powerhshell
+git clone https://github.com/cojudge/cojudge
+cd cojudge
+./install.ps1
+. $PROFILE
 ```
 
 This will install dependencies, build the app, and add a `cojudge` alias to your shell configuration.
@@ -50,7 +61,11 @@ cojudge
 | Command | Description |
 | --- | --- |
 | `cojudge` | Start server & open browser |
-| `cojudge <slug> <file>` | Open specific problem with starter file |
+| `cojudge <slug> <file>` | Open specific problem in browser with local file |
+| `cojudge init <slug> [--lang <lang>] [--output <filename>]` | Initialize a problem file with starter code with filename. Fall back to, for example `solution.rs`, if `filename` is not provided |
+| `cojudge run <slug> <file>` | Run sample tests for a problem from CLI (require running Docker) |
+| `cojudge submit <slug> <file>`| Submit code for a problem from CLI (require running Docker) |
+| `cojudge run <file>` | Run a playground file from CLI (require running Docker) |
 | `cojudge list` | List all available problem slugs |
 | `cojudge mark <slug>` | Mark a problem as solved |
 | `cojudge unmark <slug>` | Unmark a problem as solved |
@@ -62,7 +77,7 @@ cojudge
 | `cojudge -v, --version` | Show current version & age |
 | `cojudge -h, --help` | Show help message |
 
-**Note:** You can browse problems and organize solutions without Docker. Docker is only required when you actually want to `Run` or `Submit` code.
+**Note:** You can browse problems and organize solutions without Docker. Docker is only required when you actually want to `Run` or `Submit` code, either from the web UI or CLI.
 
 ### Manual Global Installation (If you prefer)
 If you'd rather install it globally via NPM and have the necessary permissions:
