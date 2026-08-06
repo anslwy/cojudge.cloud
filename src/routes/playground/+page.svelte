@@ -367,10 +367,15 @@ func main() {
     // Collapse state is device-local UI preference: it is kept in localStorage
     // but not in CLOUD_KEYS, so cloud sync never collects or restores it.
     const COLLAPSED_FOLDERS_KEY = 'playground-collapsed-folders';
+    // Devices that have never stored a preference get all folders collapsed on
+    // first load instead of everything expanded; the seeded state is then
+    // persisted like any other toggle. Existing preferences keep working.
+    const hasCollapsedPreference = browser && localStorage.getItem(COLLAPSED_FOLDERS_KEY) !== null;
     /** folderId -> expanded; missing means expanded by default */
     let collapsedFolders: Record<string, boolean> = browser
         ? (JSON.parse(localStorage.getItem(COLLAPSED_FOLDERS_KEY) || '{}') || {})
         : {};
+    let collapsePrefSeeded = hasCollapsedPreference;
     $: if (browser) writeProgressStorageItem(localStorage, COLLAPSED_FOLDERS_KEY, JSON.stringify(collapsedFolders));
 
     // Last markdown view mode is device-local only (not in CLOUD_KEYS).
@@ -566,6 +571,23 @@ func main() {
 
     // Explicit collapsedFolders dep so expand/collapse always refreshes the tree
     $: flatExplorer = flattenExplorer(explorerTree, collapsedFolders);
+
+    // Seed the collapsed state once when the first files appear on a fresh
+    // device (e.g. after sign-in), so the tree starts collapsed.
+    $: if (browser && !collapsePrefSeeded && explorerTree.length > 0) {
+        const seed: Record<string, boolean> = {};
+        const markCollapsed = (nodes: ExplorerNode[]) => {
+            for (const n of nodes) {
+                if (n.kind === 'folder') {
+                    seed[n.fileId] = true;
+                    markCollapsed(n.children);
+                }
+            }
+        };
+        markCollapsed(explorerTree);
+        collapsedFolders = seed;
+        collapsePrefSeeded = true;
+    }
 
     function expandAncestorFolders(fileId: string) {
         const files = getFiles();
@@ -2777,6 +2799,88 @@ func main() {
         return true;
     }
 
+    // Tab/Shift+Tab inside a list item (bullet, ordered, or task list) indents
+    // and outdents. The <li> nodes are moved wholesale so checkboxes and any
+    // nested lists stay intact (the browser's native editing rebuilds items and
+    // drops checkbox inputs).
+    function handleWysiwygTab(e: KeyboardEvent): boolean {
+        const li = getListItemFromSelection();
+        if (!li || !wysiwygEl?.contains(li)) return false;
+        const list = li.parentElement;
+        if (!list || !/^(UL|OL)$/.test(list.tagName)) return false;
+        return e.shiftKey ? outdentListItem(li) : indentListItem(li);
+    }
+
+    // Remembers the caret position as (node, offset) plain values, so the
+    // position can be re-applied after a DOM move. (A cloned Range gets
+    // re-mapped by Chrome when list nodes are moved around in a
+    // contenteditable, silently dropping the caret into a neighboring text
+    // node.)
+    function saveWysiwygCaret(): { node: Node; offset: number } | null {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return null;
+        const range = selection.getRangeAt(0);
+        return { node: range.startContainer, offset: range.startOffset };
+    }
+
+    function restoreWysiwygCaret(caret: { node: Node; offset: number } | null) {
+        if (!caret) return;
+        const selection = window.getSelection();
+        const range = document.createRange();
+        try {
+            range.setStart(caret.node, caret.offset);
+        } catch {
+            return;
+        }
+        range.collapse(true);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+    }
+
+    // Nests the item (with its own nested lists) under the previous item.
+    function indentListItem(li: HTMLElement): boolean {
+        const list = li.parentElement;
+        if (!list || !/^(UL|OL)$/.test(list.tagName)) return false;
+        const prev = li.previousElementSibling;
+        if (!prev || prev.tagName !== 'LI') return false;
+
+        const savedCaret = saveWysiwygCaret();
+        let nested: HTMLElement | null = null;
+        for (let i = 0; i < prev.childNodes.length; i++) {
+            const child = prev.childNodes[i];
+            if (child instanceof HTMLElement && /^(UL|OL)$/.test(child.tagName)) {
+                nested = child;
+                break;
+            }
+        }
+        if (!nested) {
+            nested = document.createElement(list.tagName);
+            prev.appendChild(nested);
+        }
+        nested.appendChild(li);
+        restoreWysiwygCaret(savedCaret);
+        handleWysiwygInput();
+        return true;
+    }
+
+    // Moves the item out of its nested list, placing it after its parent item.
+    function outdentListItem(li: HTMLElement): boolean {
+        const list = li.parentElement;
+        if (!list || !/^(UL|OL)$/.test(list.tagName)) return false;
+        const parentLi = list.parentElement;
+        if (!parentLi || parentLi.tagName !== 'LI') return false;
+        const outerList = parentLi.parentElement;
+        if (!outerList || !/^(UL|OL)$/.test(outerList.tagName)) return false;
+
+        const savedCaret = saveWysiwygCaret();
+        li.remove();
+        if (!list.querySelector('li')) list.remove();
+        parentLi.after(li);
+        restoreWysiwygCaret(savedCaret);
+        handleWysiwygInput();
+        return true;
+    }
+
     // Repairs DOMs the browser already corrupted (e.g. a native merge put
     // several checkboxes into one <li>): split them back into separate items.
     function healTaskListStructure() {
@@ -3249,6 +3353,14 @@ func main() {
             if (e.key === 'Escape') {
                 e.preventDefault();
                 closeMentionPopup();
+                return;
+            }
+        }
+
+        // Tab/Shift+Tab indents/outdents list items (including checklists).
+        if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+            if (handleWysiwygTab(e)) {
+                e.preventDefault();
                 return;
             }
         }
