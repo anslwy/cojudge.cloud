@@ -2,6 +2,7 @@ import { marked, Renderer } from 'marked';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { languageIconSvg } from './languageIcon';
+import { PASTED_IMAGE_SCHEME, parsePastedImageLink, getPastedImage } from './imageStore';
 
 function simpleHash(str: string): string {
     let hash = 0;
@@ -69,9 +70,12 @@ if (typeof document !== 'undefined') {
         if (copyBtn) {
             e.preventDefault();
             const wrapper = copyBtn.closest('.code-block-wrapper, .md-code-copy') as HTMLElement | null;
-            const codeEl = wrapper?.querySelector('code');
+            // Rendered blocks are <pre><code>, but blocks created in WYSIWYG
+            // (toolbar button / ``` shortcut) are bare <pre>, so fall back.
+            const codeEl = wrapper?.querySelector('code') ?? wrapper?.querySelector('pre');
             if (!codeEl) return;
-            const code = codeEl.innerText;
+            // Strip the ZWSP caret placeholder kept in fresh WYSIWYG blocks.
+            const code = (codeEl.innerText || '').replace(/\u200B/g, '');
             navigator.clipboard.writeText(code).then(() => {
                 const originalInner = copyBtn.innerHTML;
                 const originalColor = copyBtn.style.color;
@@ -282,6 +286,24 @@ export function wrapImageThumbnails(root: HTMLElement) {
 // they get a copy button (see wrapCodeBlocksWithCopy). Stripped again by
 // htmlToMarkdown so only the <pre> round-trips back to markdown.
 export const CODE_COPY_WRAPPER_CLASS = 'md-code-copy';
+
+// Images pasted into markdown documents are stored in IndexedDB and referenced
+// by a fake link (cojudge://image/<id>). While the payload is being resolved,
+// <img> elements whose src is still the fake link stay hidden (see app.css).
+// Once resolved, the data URL lives in src and the fake link is kept in the
+// data-cojudge-img attribute so htmlToMarkdown round-trips it back to the fake
+// link instead of the (potentially huge) base64 payload.
+export async function resolvePastedImages(root: HTMLElement): Promise<void> {
+    if (typeof indexedDB === 'undefined') return;
+    const imgs = Array.from(root.querySelectorAll('img'));
+    for (const img of imgs) {
+        const fakeLink = img.getAttribute('data-cojudge-img') || img.getAttribute('src') || '';
+        if (!parsePastedImageLink(fakeLink)) continue;
+        img.dataset.cojudgeImg = fakeLink;
+        const dataUrl = await getPastedImage(fakeLink);
+        if (dataUrl && img.isConnected) img.src = dataUrl;
+    }
+}
 
 // GFM task-list checkboxes are rendered disabled by marked. In the WYSIWYG
 // editor we enable them so users can click to toggle, and mark them non-editable
@@ -559,6 +581,23 @@ function getTurndownService(): TurndownService {
             hr: '---'
         });
         turndownService.use(gfm);
+        // execCommand('formatBlock', 'pre') (the WYSIWYG code-block toolbar
+        // button) produces a bare <pre> without the <code> child turndown's
+        // default fencedCodeBlock rule expects, so round-trip those back to
+        // fenced code blocks too.
+        turndownService.addRule('bareCodeBlock', {
+            filter: (node: HTMLElement) =>
+                node.nodeName === 'PRE' && !node.querySelector('code'),
+            replacement: (_content: string, node: HTMLElement) => {
+                // The WYSIWYG ``` shortcut keeps a ZWSP in a freshly created
+                // empty code block (turndown skips truly blank elements), which
+                // is stripped here so the fence round-trips as ```\n```.
+                const code = (node.textContent || '').replace(/\u200B/g, '');
+                let fence = '```';
+                while (code.includes(fence)) fence += '`';
+                return '\n\n' + fence + (code ? '\n' + code.replace(/\n$/, '') + '\n' : '\n') + fence + '\n\n';
+            }
+        });
         // Inline code created by the WYSIWYG backtick auto-matching (see
         // inlineCodeSpanHtml) round-trips back to inline code markdown.
         turndownService.addRule('wysiwygInlineCode', {
@@ -582,6 +621,19 @@ function getTurndownService(): TurndownService {
                 const labelEl = node.querySelector(`.${FILE_MENTION_LABEL_CLASS}`);
                 const label = (labelEl?.textContent || node.textContent || href).trim();
                 return `[${label}](${href})`;
+            }
+        });
+        // Pasted images resolve to a data URL in src but keep the IndexedDB
+        // fake link in data-cojudge-img; serialize the fake link back to
+        // markdown so the document stays small and stable.
+        turndownService.addRule('pastedImage', {
+            filter: (node: HTMLElement) =>
+                node.nodeName === 'IMG' &&
+                (node.getAttribute('data-cojudge-img') || node.getAttribute('src') || '').startsWith(PASTED_IMAGE_SCHEME),
+            replacement: (_content: string, node: HTMLElement) => {
+                const fakeLink = node.getAttribute('data-cojudge-img') || node.getAttribute('src') || '';
+                const alt = (node.getAttribute('alt') || '').replace(/(\n+\s*)+/g, '\n').replace(/[[\]]/g, '\\$&');
+                return `![${alt}](${fakeLink})`;
             }
         });
         // Custom taskListItems rule that matches ANY checkbox input, even if
