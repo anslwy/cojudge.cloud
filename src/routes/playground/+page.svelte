@@ -5,13 +5,14 @@
     import LanguageIcon from '$lib/components/LanguageIcon.svelte';
     import ShareModal from '$lib/components/ShareModal.svelte';
     import Tooltip from '$lib/components/Tooltip.svelte';
+    import WhiteboardIcon from '$lib/components/WhiteboardIcon.svelte';
     import Whiteboard from '$lib/components/Whiteboard.svelte';
     import { showAlert, showConfirm } from '$lib/dialogs';
     import { consumeForkTransfer } from '$lib/forkTransfer';
     import { ensureAuthenticated, initFirebase } from '$lib/firebase';
     import { isDesktopRuntime } from '$lib/firebaseSettings';
     import { cloudSyncState } from '$lib/cloudSync';
-    import { WHITEBOARD_FILE_ID } from '$lib/cloudFileChange';
+    import { CLOUD_FILE_DISCARDED_EVENT, WHITEBOARD_FILE_ID, WORKSPACE_FILE_ID_PREFIX } from '$lib/cloudFileChange';
     import { CLOUD_FLUSH_EVENT, isCloudRestoreInProgress, writeProgressStorageItem } from '$lib/progressBackup';
     import codeStore from '$lib/stores/codeStore.js';
     import fileStore, { isDotFileName, type FileEntry, fileSyncVersion } from '$lib/stores/fileStore.js';
@@ -19,7 +20,7 @@
     import { type ProgrammingLanguage } from '$lib/utils/util.js';
     import { renderMarkdown, renderMarkdownPlain, htmlToMarkdown, wrapImageThumbnails, wrapCodeBlocksWithCopy, ensureTrailingEmptyLine, ensureFileMentionCarets, prepareTaskListCheckboxes, isTaskListItem, isEmptyTaskListItem, createTaskCheckbox, ensureTaskCheckbox, ensureTaskItemCaretAnchor, removeTaskCheckbox, inlineCodeSpanHtml, INLINE_CODE_STYLE_MARKER, THUMB_WRAPPER_CLASS, THUMB_DELETE_CLASS, CODE_COPY_WRAPPER_CLASS, resolvePastedImages, isUrlLike, normalizeUrl, linkHtml, parsePlaygroundFileId, playgroundFileHref, fileMentionHtml, FILE_MENTION_CLASS } from '$lib/utils/markdown';
     import { storePastedImage, deletePastedImage, inlinePastedImageLinks } from '$lib/utils/imageStore';
-    import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
+    import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore/lite';
     import QRCode from 'qrcode';
     import { browser } from '$app/environment';
     import { onMount, tick, onDestroy } from 'svelte';
@@ -87,6 +88,10 @@ func main() {
 
     function isSpecialTabType(type?: string): type is 'preview' | 'whiteboard' {
         return type === 'preview' || type === 'whiteboard';
+    }
+
+    function isWhiteboardTab(fileId: string): boolean {
+        return tabs.some((tab) => tab.fileId === fileId && tab.type === 'whiteboard');
     }
 
     type ExplorerNode = {
@@ -2172,6 +2177,19 @@ func main() {
         return sourceEntry?.content ?? '';
     }
 
+    function renderWysiwygFromStore() {
+        if (!wysiwygEl || !wysiwygSourceFileId) return;
+        wysiwygEl.innerHTML = renderMarkdownPlain(getActivePreviewSourceContent(), {
+            resolveFileLanguage: (fileId) => getLanguageForTab(fileId)
+        });
+        wrapImageThumbnails(wysiwygEl);
+        wrapCodeBlocksWithCopy(wysiwygEl);
+        ensureFileMentionCarets(wysiwygEl);
+        prepareTaskListCheckboxes(wysiwygEl);
+        ensureTrailingEmptyLine(wysiwygEl);
+        resolvePastedImages(wysiwygEl);
+    }
+
     async function enterPreviewEditMode(force = false) {
         if (!activeTab?.sourceFileId) return;
         if (!force && previewEditMode && wysiwygSourceFileId === activeTab.sourceFileId && wysiwygEl) {
@@ -2181,15 +2199,7 @@ func main() {
         previewEditMode = true;
         await tick();
         if (wysiwygEl) {
-            wysiwygEl.innerHTML = renderMarkdownPlain(getActivePreviewSourceContent(), {
-                resolveFileLanguage: (fileId) => getLanguageForTab(fileId)
-            });
-            wrapImageThumbnails(wysiwygEl);
-            wrapCodeBlocksWithCopy(wysiwygEl);
-            ensureFileMentionCarets(wysiwygEl);
-            prepareTaskListCheckboxes(wysiwygEl);
-            ensureTrailingEmptyLine(wysiwygEl);
-            resolvePastedImages(wysiwygEl);
+            renderWysiwygFromStore();
             wysiwygEl.focus();
         }
     }
@@ -3292,6 +3302,37 @@ func main() {
             }
             return { ...s, [fkey]: JSON.stringify(files) };
         });
+    }
+
+    function handleCloudFileDiscard(event: Event) {
+        const fileId = (event as CustomEvent<{ fileId?: unknown }>).detail?.fileId;
+        if (typeof fileId !== 'string') return;
+
+        const activeSourceId = activeTab?.type === 'preview'
+            ? activeTab.sourceFileId
+            : activeTab?.fileId;
+        const workspaceWasDiscarded = fileId === `${WORKSPACE_FILE_ID_PREFIX}${fileKey()}`;
+        if (!activeSourceId || (fileId !== activeSourceId && !workspaceWasDiscarded)) return;
+
+        if (activeTab?.type === 'preview') {
+            // WYSIWYG content is not driven by a Svelte prop. Replace the DOM
+            // before refreshCloudLocalState emits its next flush event, or the
+            // stale DOM would immediately save the discarded content again.
+            if (previewEditMode && wysiwygSourceFileId === activeTab.sourceFileId) {
+                if (wysiwygDebounce) {
+                    clearTimeout(wysiwygDebounce);
+                    wysiwygDebounce = null;
+                }
+                renderWysiwygFromStore();
+            }
+            return;
+        }
+        if (activeTab?.type === 'whiteboard') return;
+
+        // CodeEditor is also bound to an in-memory value. Suppress its reactive
+        // save while loading the restored entry into the active editor.
+        skipNextSave = true;
+        void loadOrInitFile(language);
     }
 
     // Switch WYSIWYG mode when changing tabs
@@ -4509,11 +4550,13 @@ func main() {
         window.addEventListener('keydown', handleKeyDown);
         window.addEventListener('beforeunload', handleUnload);
         window.addEventListener(CLOUD_FLUSH_EVENT, handleCloudFlush);
+        window.addEventListener(CLOUD_FILE_DISCARDED_EVENT, handleCloudFileDiscard);
         return () => {
             document.removeEventListener('click', handleDocClick);
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('beforeunload', handleUnload);
             window.removeEventListener(CLOUD_FLUSH_EVENT, handleCloudFlush);
+            window.removeEventListener(CLOUD_FILE_DISCARDED_EVENT, handleCloudFileDiscard);
         };
     });
 </script>
@@ -4899,7 +4942,11 @@ func main() {
                                 </svg>
                                 <div class="search-result-file-info" on:click|stopPropagation={() => activateTab(result.fileId)}>
                                     <span class="file-icon">
-                                        <LanguageIcon language={tabLanguages[result.fileId] ?? result.language} size={17} />
+                                        {#if isWhiteboardTab(result.fileId)}
+                                            <WhiteboardIcon name="whiteboard" size={17} />
+                                        {:else}
+                                            <LanguageIcon language={tabLanguages[result.fileId] ?? result.language} size={17} />
+                                        {/if}
                                     </span>
                                     <span class="file-name">{@html highlightMatch(result.fileName, globalSearchQuery, globalSearchCaseSensitive, globalSearchRegex)}</span>
                                 </div>
@@ -4971,10 +5018,7 @@ func main() {
                                         <LanguageIcon language="markdown" size={17} />
                                     </span>
                                 {:else if t.type === 'whiteboard'}
-                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="margin-right:2px;flex-shrink:0;">
-                                        <rect x="3" y="4" width="18" height="16" rx="2"></rect>
-                                        <path d="m8 15 6-6 2 2-6 6H8v-2Z"></path>
-                                    </svg>
+                                    <WhiteboardIcon name="whiteboard" size={12} strokeWidth={2} />
                                 {:else}
                                     <span class="tab-lang-icon">
                                         <LanguageIcon language={tabLanguages[t.fileId] ?? language} size={17} />
@@ -5326,7 +5370,9 @@ func main() {
                                     }}
                                 >
                                     <div class="recent-file-card-header">
-                                        {#if file.type === 'preview'}
+                                        {#if file.type === 'whiteboard'}
+                                            <WhiteboardIcon name="whiteboard" size={17} />
+                                        {:else if file.type === 'preview'}
                                             <LanguageIcon language="markdown" size={17} />
                                         {:else}
                                             <LanguageIcon language={tabLanguages[file.fileId] ?? language} size={17} />
@@ -5446,7 +5492,9 @@ func main() {
                             on:mouseenter={() => selectedIndex = i}
                         >
                             <span class="search-file-info">
-                                {#if file.type === 'preview'}
+                                {#if file.type === 'whiteboard'}
+                                    <WhiteboardIcon name="whiteboard" size={17} />
+                                {:else if file.type === 'preview'}
                                     <LanguageIcon language="markdown" size={17} />
                                 {:else}
                                     <LanguageIcon language={tabLanguages[file.fileId] ?? language} size={17} />
@@ -5485,7 +5533,9 @@ func main() {
                         on:mouseenter={() => mentionSelectedIndex = i}
                     >
                         <span class="search-file-info">
-                            {#if file.type === 'preview'}
+                            {#if file.type === 'whiteboard'}
+                                <WhiteboardIcon name="whiteboard" size={17} />
+                            {:else if file.type === 'preview'}
                                 <LanguageIcon language="markdown" size={17} />
                             {:else}
                                 <LanguageIcon language={tabLanguages[file.fileId] ?? language} size={17} />
