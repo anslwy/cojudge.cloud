@@ -1,11 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { renderMarkdown, renderMarkdownPlain, htmlToMarkdown, isUrlLike, normalizeUrl, linkHtml, parsePlaygroundFileId, playgroundFileHref } from './markdown';
+import { renderMarkdown, renderMarkdownPlain, htmlToMarkdown, highlightCodeHtml, removeFencedCodeBlock, isUrlLike, normalizeUrl, linkHtml, parsePlaygroundFileId, playgroundFileHref } from './markdown';
 
 describe('markdown utils', () => {
     it('renders markdown with the interactive code-block renderer', () => {
         const html = renderMarkdown('```js\nconsole.log("hi");\n```');
         expect(html).toContain('code-block-wrapper');
         expect(html).toContain('console');
+    });
+
+    it('syntax-highlights common code language aliases', () => {
+        const html = renderMarkdown('```js\nconst value = "hi";\n```');
+        expect(html).toContain('<span class="hl-keyword">const</span>');
+        expect(html).toContain('<span class="hl-string">&quot;hi&quot;</span>');
+        expect(highlightCodeHtml('if True:\n    print("ok")', 'python')).toContain('<span class="hl-keyword">if</span>');
     });
 
     it('renders plain GFM markdown to HTML', () => {
@@ -112,6 +119,22 @@ describe('markdown utils', () => {
         expect(htmlToMarkdown(renderMarkdownPlain(back))).toBe(back);
     });
 
+    it('removes a matching fenced code block from markdown', () => {
+        const md = ['before', '', '```python', 'if True:', '    print("ok")', '```', '', 'after'].join('\n');
+        expect(removeFencedCodeBlock(md, 'python', 'if True:\n    print("ok")')).toBe('before\n\nafter');
+        // Non-matching language or content leaves the block untouched
+        expect(removeFencedCodeBlock(md, 'js', 'if True:\n    print("ok")')).toBe(md);
+        expect(removeFencedCodeBlock(md, 'python', 'else')).toBe(md);
+        // Longer fences (content containing backticks) still match
+        const backticks = ['a', '', '````', 'x`y', '````', '', 'b'].join('\n');
+        expect(removeFencedCodeBlock(backticks, '', 'x`y')).toBe('a\n\nb');
+        // Tilde fences and language-less blocks match too
+        const tilde = ['a', '', '~~~', 'z', '~~~', '', 'b'].join('\n');
+        expect(removeFencedCodeBlock(tilde, '', 'z')).toBe('a\n\nb');
+        // No fence at all returns the input unchanged
+        expect(removeFencedCodeBlock('plain text', '', 'plain')).toBe('plain text');
+    });
+
     it('round-trips bare <pre> elements (WYSIWYG code-block button) to fenced code', () => {
         // execCommand('formatBlock', 'pre') produces <pre> without a <code> child
         const back = htmlToMarkdown('<pre>const x = 1;</pre>');
@@ -122,6 +145,9 @@ describe('markdown utils', () => {
         // Multi-line content keeps every line inside the fence
         const multi = htmlToMarkdown('<pre>line one\nline two</pre>');
         expect(multi).toMatch(/^```\nline one\nline two\n```$/m);
+
+        const language = htmlToMarkdown('<pre data-language="python">if True:</pre>');
+        expect(language).toMatch(/^```python\nif True:\n```$/m);
 
         // Backticks inside the code grow the fence instead of breaking it
         const tricky = htmlToMarkdown('<pre>```js\nfn()</pre>');
