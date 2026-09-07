@@ -78,6 +78,12 @@
     let revealingFolder = false;
     let pathCopied = false;
     let pathCopiedTimer: ReturnType<typeof setTimeout> | undefined;
+    let resettingContentKey: string | null = null;
+    let resettingAllContent = false;
+    type ModifiedItem = { id: string; title: string };
+    $: modifiedProblems = ((data?.modifiedProblems ?? []) as ModifiedItem[]);
+    $: modifiedCourses = ((data?.modifiedCourses ?? []) as ModifiedItem[]);
+    $: modifiedItemCount = modifiedProblems.length + modifiedCourses.length;
     let importNotice: { message: string; error: boolean; filePath?: string } | null = null;
     let importNoticeTimer: ReturnType<typeof setTimeout> | undefined;
     let showFirebaseSettings = false;
@@ -267,9 +273,9 @@
 
     function sourceTitle(source?: ContentSource): string {
         return source === 'custom'
-            ? 'Custom content — only exists in your CoJudge folder'
+            ? 'Custom content — only exists in your Cojudge folder'
             : source === 'modified'
-                ? 'Modified — edited in your CoJudge folder, differs from the bundled copy'
+                ? 'Modified — edited in your Cojudge folder, differs from the bundled copy'
                 : '';
     }
 
@@ -326,6 +332,12 @@
     $: selectedCourseProblems = (data?.problems ?? []) as Problem[];
     $: courseDescription = data?.selectedCourseInfo?.description ?? "";
     $: categoryOrder = data?.selectedCourseInfo?.["category-order"] ?? [];
+    $: hasCustomContent =
+        courses.some((c) => c.source === 'custom') ||
+        selectedCourseProblems.some((p) => p.source === 'custom');
+    $: hasModifiedContent =
+        courses.some((c) => c.source === 'modified') ||
+        selectedCourseProblems.some((p) => p.source === 'modified');
     // Map for fast lookup of category rank
     let orderMap: Record<string, number> = {};
     $: (function buildOrderMap() {
@@ -920,6 +932,52 @@
         }
     }
 
+    async function resetContentToBundled(type: 'problem' | 'course', id: string) {
+        manageProblemsError = '';
+        resettingContentKey = `${type}:${id}`;
+        try {
+            const response = await fetch('/api/content/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type, id })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(result?.error || 'Could not reset content');
+            }
+            window.location.reload();
+        } catch (err: any) {
+            manageProblemsError = err?.message
+                ? `Could not reset ${id}: ${err.message}`
+                : `Could not reset ${id}`;
+        } finally {
+            resettingContentKey = null;
+        }
+    }
+
+    async function resetAllModifiedToBundled() {
+        manageProblemsError = '';
+        resettingAllContent = true;
+        try {
+            const response = await fetch('/api/content/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ all: true })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(result?.error || 'Could not reset content');
+            }
+            window.location.reload();
+        } catch (err: any) {
+            manageProblemsError = err?.message
+                ? `Could not reset all: ${err.message}`
+                : 'Could not reset all';
+        } finally {
+            resettingAllContent = false;
+        }
+    }
+
     async function closeClearProgress() {
         showClearConfirm = false;
         await tick();
@@ -1116,7 +1174,7 @@
                             class="dropdown-item"
                             role="menuitem"
                             onclick={openManageProblems}
-                            title="View, edit, and add problems and courses in your CoJudge folder"
+                            title="View, edit, and add problems and courses in your Cojudge folder"
                         >
                             <span class="dropdown-item-content">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1266,7 +1324,7 @@
             <div bind:this={manageProblemsCard} class="home-modal-card manage-problems-card" role="dialog" aria-modal="true" aria-labelledby="manage-problems-title">
                 <span class="modal-eyebrow">Local content</span>
                 <h2 id="manage-problems-title">Manage Problems</h2>
-                <p class="manage-intro">Problems and courses live in your CoJudge folder. Edit files directly — changes apply on refresh.</p>
+                <p class="manage-intro">Problems and courses live in your Cojudge folder. Edit files directly — changes apply on refresh.</p>
 
                 <div class="manage-path-row">
                     <code class="manage-path-text">{contentDir}</code>
@@ -1303,7 +1361,48 @@
                     </div>
                 </div>
 
-                <p class="manage-note">Duplicate a problem folder, edit it, then register the slug in a <code>courseinfo.json</code>. Missing files are re-seeded; your edits are never overwritten.</p>
+                <p class="manage-note">Duplicate a problem folder, edit it, then register the slug in a <code>courseinfo.json</code>. Unedited copies auto-update when Cojudge ships fixes; your edits are never overwritten.</p>
+
+                {#if modifiedItemCount > 0}
+                    <div class="manage-section manage-modified">
+                        <h3>Modified — differs from bundled ({modifiedItemCount})</h3>
+                        <p>If you did not edit these, they are stale copies from an older version — reset them to receive the latest fixes. Resetting discards your edits to that item.</p>
+                        <ul class="manage-modified-list">
+                            {#each modifiedProblems as item}
+                                <li>
+                                    <span class="manage-modified-id" title={item.title}>{item.id}</span>
+                                    <span class="manage-modified-kind">problem</span>
+                                    <button
+                                        class="btn manage-reset-btn"
+                                        type="button"
+                                        disabled={resettingContentKey !== null || resettingAllContent}
+                                        onclick={() => void resetContentToBundled('problem', item.id)}
+                                    >{resettingContentKey === `problem:${item.id}` ? 'Resetting…' : 'Reset'}</button>
+                                </li>
+                            {/each}
+                            {#each modifiedCourses as item}
+                                <li>
+                                    <span class="manage-modified-id" title={item.title}>{item.id}</span>
+                                    <span class="manage-modified-kind">course</span>
+                                    <button
+                                        class="btn manage-reset-btn"
+                                        type="button"
+                                        disabled={resettingContentKey !== null || resettingAllContent}
+                                        onclick={() => void resetContentToBundled('course', item.id)}
+                                    >{resettingContentKey === `course:${item.id}` ? 'Resetting…' : 'Reset'}</button>
+                                </li>
+                            {/each}
+                        </ul>
+                        {#if modifiedItemCount > 1}
+                            <button
+                                class="btn"
+                                type="button"
+                                disabled={resettingContentKey !== null || resettingAllContent}
+                                onclick={() => void resetAllModifiedToBundled()}
+                            >{resettingAllContent ? 'Resetting…' : `Reset all (${modifiedItemCount})`}</button>
+                        {/if}
+                    </div>
+                {/if}
 
                 {#if manageProblemsError}
                     <p class="modal-error" role="alert">{manageProblemsError}</p>
@@ -1521,11 +1620,17 @@
                 >{sourceLabel(course.source)}</span>{/if}</a>
         {/each}
     </nav>
-    {#if courses.some((course) => course.source && course.source !== 'bundled')}
+    {#if hasCustomContent || hasModifiedContent}
         <div class="source-legend" aria-label="Legend for custom content labels">
-            <span class="source-badge custom">Custom</span> created in your CoJudge folder
-            <span class="source-legend-sep" aria-hidden="true">·</span>
-            <span class="source-badge modified">Modified</span> edited in your CoJudge folder
+            {#if hasCustomContent}
+                <span class="source-badge custom">Custom</span> created in your Cojudge folder
+            {/if}
+            {#if hasCustomContent && hasModifiedContent}
+                <span class="source-legend-sep" aria-hidden="true">·</span>
+            {/if}
+            {#if hasModifiedContent}
+                <span class="source-badge modified">Modified</span> edited in your Cojudge folder
+            {/if}
         </div>
     {/if}
     <div class="intro">
@@ -2118,6 +2223,45 @@
     }
     .manage-section .btn {
         margin-top: 0.55rem;
+    }
+    .manage-modified p {
+        margin-bottom: 0.55rem !important;
+    }
+    .manage-modified-list {
+        list-style: none;
+        display: grid;
+        gap: 0.35rem;
+        max-height: 12rem;
+        overflow-y: auto;
+        margin: 0 0 0.1rem;
+        padding: 0;
+    }
+    .manage-modified-list li {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+    }
+    .manage-modified-id {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.82rem;
+        color: var(--color-text);
+    }
+    .manage-modified-kind {
+        flex: 0 0 auto;
+        font-size: 0.72rem;
+        color: var(--color-text-secondary);
+    }
+    .manage-modified-list .manage-reset-btn {
+        flex: 0 0 auto;
+        margin-top: 0;
+        padding: 0.3rem 0.7rem;
+        font-size: 0.8rem;
     }
     .manage-note {
         margin: 0 0 0.65rem !important;
