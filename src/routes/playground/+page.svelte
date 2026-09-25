@@ -616,6 +616,31 @@ func main() {
         collapsePrefSeeded = true;
     }
 
+    let fileListEl: HTMLDivElement | undefined;
+
+    async function revealActiveExplorerFile(fileId: string | undefined) {
+        if (!fileId) return;
+        // Let the tab/tree update finish before changing collapsedFolders.
+        // Otherwise flatExplorer may already have run in this reactive flush.
+        await tick();
+        if (!fileListEl || fileId !== activeExplorerFileId) return;
+        expandAncestorFolders(fileId);
+        await tick();
+        if (!fileListEl || fileId !== activeExplorerFileId) return;
+        const item = fileListEl.querySelector<HTMLElement>('.file-item.active');
+        if (!item) return;
+
+        const listRect = fileListEl.getBoundingClientRect();
+        const itemRect = item.getBoundingClientRect();
+        const top = listRect.top + fileListEl.clientTop;
+        const bottom = top + fileListEl.clientHeight;
+        if (itemRect.top < top) {
+            fileListEl.scrollTop += itemRect.top - top;
+        } else if (itemRect.bottom > bottom) {
+            fileListEl.scrollTop += itemRect.bottom - bottom;
+        }
+    }
+
     function expandAncestorFolders(fileId: string) {
         const files = getFiles();
         let parentId: string | null | undefined = files.find((f) => f.fileId === fileId)?.parentId ?? null;
@@ -3671,6 +3696,9 @@ func main() {
         if (!pendingWysiwygHistory) {
             queueWysiwygHistoryEntry(captureWysiwygHistoryState(), event.inputType || 'input');
         }
+        if (event.inputType === 'insertParagraph' || event.inputType === 'insertLineBreak') {
+            exitInlineCodeAtEnd();
+        }
     }
 
     function wysiwygHistoryStateMatches(state: WysiwygHistoryState): boolean {
@@ -4106,6 +4134,36 @@ func main() {
         if (!(el instanceof HTMLElement)) return false;
         if (el.tagName === 'CODE') return el.parentElement?.tagName !== 'PRE';
         return (el.getAttribute('style') || '').includes(INLINE_CODE_STYLE_MARKER);
+    }
+
+    // Breaks at the end of inline code must start outside its formatting;
+    // otherwise the browser clones empty code pills into the following lines.
+    function exitInlineCodeAtEnd() {
+        const selection = window.getSelection();
+        if (!wysiwygEl || !selection?.isCollapsed || !selection.rangeCount) return;
+        const range = selection.getRangeAt(0);
+        if (!wysiwygEl.contains(range.startContainer)) return;
+        let ancestor = range.startContainer instanceof Element
+            ? range.startContainer : range.startContainer.parentElement;
+        if (ancestor?.closest('pre')) return;
+        let code: Element | null = null;
+        while (ancestor && ancestor !== wysiwygEl) {
+            if (isInlineCodeElement(ancestor)) code = ancestor;
+            ancestor = ancestor.parentElement;
+        }
+        if (!code) return;
+        const remaining = range.cloneRange();
+        remaining.setEnd(code, code.childNodes.length);
+        if (remaining.toString().replace(/\u200B/g, '') !== '') return;
+
+        // A caret immediately after an inline element still inherits its style
+        // in Chrome. Place it after a plain-text anchor instead, as auto-close does.
+        const anchor = document.createTextNode('\u200B');
+        code.after(anchor);
+        range.setStart(anchor, 1);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
     }
 
     // When the user types a closing backtick, try to match it with a previous
@@ -6400,11 +6458,15 @@ func main() {
     $: hasOpenTabs = tabs.some(t => t.isOpen);
     $: activeTabName = tabs[activeTabId]?.fileName;
     $: activeTab = tabs[activeTabId];
+    $: activeRevealTabId = activeTab?.fileId;
     // Preview tabs use a distinct fileId; explorer should highlight the source file.
     $: activeExplorerFileId =
         activeTab?.type === 'preview' && activeTab.sourceFileId
             ? activeTab.sourceFileId
             : activeTab?.fileId;
+    $: if (browser && fileListEl && activeRevealTabId && hasOpenTabs) {
+        void revealActiveExplorerFile(activeExplorerFileId);
+    }
     $: fileStoreValue = $fileStore;
     $: tabLanguages = (() => {
         fileStoreValue;
@@ -6740,6 +6802,7 @@ func main() {
         </div>
         <div
             class="file-list {explorerDragOverRoot ? 'drag-over-root' : ''}"
+            bind:this={fileListEl}
             data-explorer-root="true"
             role="tree"
         >
@@ -7364,7 +7427,7 @@ func main() {
                         <!-- svelte-ignore a11y-click-events-have-key-events -->
                         <!-- svelte-ignore a11y-no-static-element-interactions -->
                         <div class="wysiwyg-toolbar" on:mousedown={handleToolbarMouseDown} on:click={handleToolbarClick}>
-                            <Tooltip text={isMac ? "Cmd+B" : "Ctrl+B"} pos="bottom">
+                            <Tooltip text={isMac ? "Cmd+B" : "Ctrl+B"} pos="right">
                                 <button type="button" data-command="bold" aria-label="Bold">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"/><path d="M6 12h9a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"/></svg>
                                 </button>
