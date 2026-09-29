@@ -14,6 +14,7 @@
     import GameHistoryPopup from "$lib/components/GameHistoryPopup.svelte";
     import gameResultsStore, { type GameResult } from '$lib/stores/gameResultsStore';
     import CloudSyncModal from "$lib/components/CloudSyncModal.svelte";
+    import DockerSettingsModal from "$lib/components/DockerSettingsModal.svelte";
     import {
         cloudSyncState,
         refreshCloudLocalState,
@@ -55,6 +56,9 @@
     let manageProblemsCard: HTMLElement | null = null;
     let manageProblemsError = '';
     let showCliSettings = false;
+    let showDockerSettings = false;
+    let dockerConnected = false;
+    let dockerStatusChecking = false;
     let cliSettingsCard: HTMLElement | null = null;
     let cliBusy = false;
     let cliError = '';
@@ -99,7 +103,7 @@
     let showGamePopup = false;
     let isDesktopMode = browser && isDesktopRuntime();
     $: if (browser) {
-        document.body.style.overflow = showGamePopup || pendingImport || showFirebaseSettings || showLoadCode || showClearConfirm || showManageProblems || showCliSettings ? 'hidden' : '';
+        document.body.style.overflow = showGamePopup || pendingImport || showFirebaseSettings || showLoadCode || showClearConfirm || showManageProblems || showCliSettings || showDockerSettings ? 'hidden' : '';
     }
 
     $: contentDir = (data?.contentDir ?? '~/cojudge') as string;
@@ -194,6 +198,7 @@
         if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
         event.preventDefault();
         showDropdown = true;
+        void refreshDockerStatus();
         void refreshCloudLocalState();
         await tick();
         const items = dropdownItems();
@@ -203,6 +208,7 @@
     function toggleDropdown() {
         showDropdown = !showDropdown;
         if (showDropdown) void refreshCloudLocalState();
+        if (showDropdown) void refreshDockerStatus();
     }
 
     function handleDropdownKeydown(event: KeyboardEvent) {
@@ -728,7 +734,7 @@
 
     function trapModalFocus(event: KeyboardEvent, modal: HTMLElement) {
         const focusable = Array.from(
-            modal.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)')
+            modal.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled)')
         );
         if (!focusable.length) return;
         const first = focusable[0];
@@ -744,6 +750,8 @@
 
     function handleModalKeydown(event: KeyboardEvent) {
         if ($activeDialog) return;
+        // Note: Docker settings modal handles its own Escape/Tab via DockerSettingsModal.
+        if (showDockerSettings) return;
         const activeModal = pendingImport
             ? importModalCard
             : showClearConfirm
@@ -797,14 +805,44 @@
         dropdownToggleButton?.focus();
     }
 
-    function invokeDesktop<T>(command: string): Promise<T> {
+    function invokeDesktop<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         const tauriInternals = (window as Window & {
             __TAURI_INTERNALS__?: { invoke: (name: string, args?: Record<string, unknown>) => Promise<T> };
         }).__TAURI_INTERNALS__;
         if (!tauriInternals?.invoke) {
             return Promise.reject(new Error('Desktop bridge unavailable.'));
         }
-        return tauriInternals.invoke(command);
+        return tauriInternals.invoke(command, args);
+    }
+
+    function openDockerSettings() {
+        if (!isDesktopMode || $page.data.isDemoSite) return;
+        showDropdown = false;
+        showDockerSettings = true;
+    }
+
+    async function refreshDockerStatus() {
+        if (!isDesktopMode || $page.data.isDemoSite || dockerStatusChecking) return;
+        dockerStatusChecking = true;
+        try {
+            const settings = await invokeDesktop<{ selected: string }>('docker_settings');
+            await invokeDesktop('test_docker_connection', { selected: settings.selected });
+            dockerConnected = true;
+        } catch {
+            dockerConnected = false;
+        } finally {
+            dockerStatusChecking = false;
+        }
+    }
+
+    async function closeDockerSettings() {
+        showDockerSettings = false;
+        await tick();
+        dropdownToggleButton?.focus();
+    }
+
+    function handleDockerSaved() {
+        showImportNotice('Docker settings saved. Quit and reopen Cojudge to apply.', false);
     }
 
     async function refreshCliStatus() {
@@ -1205,6 +1243,22 @@
                             </span>
                         </button>
                         <div class="dropdown-separator" role="separator"></div>
+                        {#if !$page.data.isDemoSite}
+                            <button class="dropdown-item" role="menuitem" onclick={openDockerSettings}>
+                                <span class="dropdown-item-content">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+                                        <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+                                        <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+                                        <rect x="14" y="14" width="7" height="7" rx="1"></rect>
+                                    </svg>
+                                    Docker settings
+                                </span>
+                                <span class="firebase-menu-status" class:configured={dockerConnected && !dockerStatusChecking} title="Connection status of the saved Docker runtime" aria-label={dockerStatusChecking ? 'Checking Docker connection' : dockerConnected ? 'Docker connected' : 'Docker unavailable'}>
+                                    {dockerStatusChecking ? '…' : dockerConnected ? 'On' : 'Off'}
+                                </span>
+                            </button>
+                        {/if}
                         <button
                             class="dropdown-item"
                             role="menuitem"
@@ -1414,6 +1468,9 @@
                 </div>
             </div>
         </div>
+    {/if}
+    {#if showDockerSettings && isDesktopMode && !$page.data.isDemoSite}
+        <DockerSettingsModal open={showDockerSettings} onClose={closeDockerSettings} onSaved={handleDockerSaved} />
     {/if}
     {#if showCliSettings && isDesktopMode}
         <div class="home-modal-shell">
