@@ -17,8 +17,9 @@
     import codeStore from '$lib/stores/codeStore.js';
     import fileStore, { type FileEntry, fileSyncVersion } from '$lib/stores/fileStore.js';
     import { leftPaneWidthStore } from '$lib/stores/layoutStore';
-    import userSettingsStorage, { type ThemeChoice } from '$lib/stores/userSettingsStorage';
+    import userSettingsStorage, { type ThemeChoice, type EditorIndentation } from '$lib/stores/userSettingsStorage';
     import userStore from '$lib/stores/userStore';
+    import bookmarkStore, { toggleBookmarkId } from '$lib/stores/bookmarkStore';
     import { getDifficultyClass, type ProgrammingLanguage } from '$lib/utils/util.js';
     import { doc, setDoc } from 'firebase/firestore/lite';
     import { browser } from '$app/environment';
@@ -195,6 +196,7 @@
     let fontSize: number = $userSettingsStorage.editorFontSize ?? 14;
     let theme: ThemeChoice = $userSettingsStorage.theme ?? 'light';
     let vimMode: 'off' | 'on' = $userSettingsStorage.vimMode ?? 'off';
+    let indentation: EditorIndentation = $userSettingsStorage.editorIndentation ?? '4-spaces';
 
     let tabs: TabMeta[] = getInitialTabs();
     let activeTabId: number = 0;
@@ -892,6 +894,13 @@
         }
     }
 
+    $: {
+        const currentIndentation = $userSettingsStorage.editorIndentation;
+        if (indentation && currentIndentation !== indentation) {
+            userSettingsStorage.update((s) => ({ ...s, editorIndentation: indentation }));
+        }
+    }
+
     function generateShortId(length: number = 4): string {
         const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
         let result = '';
@@ -953,9 +962,9 @@
     <!-- Left Pane: Problem Statement -->
     <div class="problem-pane" class:hide={($leftPaneWidthStore === null ? 50 : $leftPaneWidthStore) < 5}>
         <div class="prose">
-            <Tooltip text={'Back'} pos="bottom"> 
+            <Tooltip text={viewMode === 'solution' ? 'Back to Statement' : 'Back'} pos={viewMode === 'solution' ? 'right' : 'bottom'}>
                 {#if viewMode === 'solution'}
-                    <button class="back-button" aria-label="Back" on:click={() => viewMode = 'statement'}>
+                    <button class="back-button" aria-label="Back to Statement" on:click={() => viewMode = 'statement'}>
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                             <path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
                         </svg>
@@ -1003,7 +1012,23 @@
             {:else if data.problem.source === 'modified'}
                 <span class="source-badge modified" title="Modified — edited in your Cojudge folder, differs from the bundled copy">Modified</span>
             {/if}
-            <a href={data.problem.link} target="_blank" rel="noopener noreferrer" class="external-link">↗</a>
+            <Tooltip text="Source Link" pos="top">
+                <a href={data.problem.link} target="_blank" rel="noopener noreferrer" class="external-link" aria-label={`Open ${data.problem.title} in LeetCode`}>↗</a>
+            </Tooltip>
+            <Tooltip text={$bookmarkStore?.[problemId] ? 'Remove bookmark' : 'Bookmark'} pos="top">
+                <button
+                    type="button"
+                    class="bookmark-btn"
+                    class:bookmarked={$bookmarkStore?.[problemId]}
+                    aria-pressed={$bookmarkStore?.[problemId] ? 'true' : 'false'}
+                    aria-label={$bookmarkStore?.[problemId] ? `Remove ${data.problem.title} from bookmarks` : `Bookmark ${data.problem.title}`}
+                    on:click={() => bookmarkStore.update((prev) => toggleBookmarkId(prev, problemId))}
+                >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill={$bookmarkStore?.[problemId] ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                </button>
+            </Tooltip>
             {#if viewMode === 'solution'}
                 <!-- Solution content from problems/[slug]/solution.md -->
                 <!-- Reference solution code blocks keep copy only (no collapse/delete) -->
@@ -1284,6 +1309,12 @@
                                 <option value="off">Standard</option>
                                 <option value="on">Vim</option>
                             </select>
+                            <label for="indent-select">Indentation</label>
+                            <select id="indent-select" bind:value={indentation}>
+                                <option value="2-spaces">2 spaces</option>
+                                <option value="4-spaces">4 spaces</option>
+                                <option value="tab">Tab</option>
+                            </select>
                         </div>
                     {/if}
                 </div>
@@ -1305,6 +1336,7 @@
                     {fontSize} 
                     {theme} 
                     {vimMode} 
+                    {indentation}
                     viewState={currentViewState}
                     bind:breakpoints={debugBreakpoints}
                     {activeDebugLine}
@@ -1736,9 +1768,66 @@
     }
 
     .external-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        vertical-align: middle;
+        width: 24px;
+        height: 24px;
+        margin-left: 4px;
+        padding: 0;
+        border-radius: 6px;
+        background: transparent;
         color: var(--color-text-secondary);
+        opacity: 0.6;
+        text-decoration: none;
         font-size: 0.8em;
-        margin-left: var(--spacing-1);
+        transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+    }
+    .external-link:hover {
+        opacity: 1;
+        background: var(--color-surface-hover);
+        color: var(--color-text);
+    }
+    .external-link:focus-visible {
+        outline: 2px solid var(--color-highlight);
+        outline-offset: 1px;
+        opacity: 1;
+    }
+
+    .bookmark-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        vertical-align: middle;
+        width: 24px;
+        height: 24px;
+        margin-left: 4px;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--color-text-secondary);
+        cursor: pointer;
+        opacity: 0.6;
+        transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+    }
+    .bookmark-btn:hover {
+        opacity: 1;
+        background: var(--color-surface-hover);
+        color: var(--color-text);
+    }
+    .bookmark-btn.bookmarked {
+        opacity: 1;
+        color: var(--color-highlight);
+    }
+    .bookmark-btn:focus-visible {
+        outline: 2px solid var(--color-highlight);
+        outline-offset: 1px;
+        opacity: 1;
+    }
+    .prose :global(.tooltip-container) {
+        vertical-align: middle;
     }
 
     .resizer {

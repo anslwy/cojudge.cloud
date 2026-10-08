@@ -113,6 +113,16 @@ export function requireGameResultsRecord(
 	return value;
 }
 
+export function requireBookmarksRecord(data: ProgressData): Record<string, unknown> {
+	const value = requireProgressObject(data, 'user-bookmarks');
+	for (const [entryKey, entryValue] of Object.entries(value)) {
+		if (entryValue !== true && entryValue !== false && entryValue !== 'true' && entryValue !== 'false') {
+			throw new Error(`user-bookmarks.${entryKey} must contain a boolean.`);
+		}
+	}
+	return value;
+}
+
 export function requireUserSettingsObject(data: ProgressData): Record<string, unknown> {
 	const value = requireProgressObject(data, 'user-settings');
 	for (const key of ['preferredLanguage', 'playgroundPreferredLanguage']) {
@@ -131,6 +141,14 @@ export function requireUserSettingsObject(data: ProgressData): Record<string, un
 	}
 	if ('vimMode' in value && value.vimMode !== 'off' && value.vimMode !== 'on') {
 		throw new Error('user-settings.vimMode is invalid.');
+	}
+	if (
+		'editorIndentation' in value
+		&& value.editorIndentation !== '2-spaces'
+		&& value.editorIndentation !== '4-spaces'
+		&& value.editorIndentation !== 'tab'
+	) {
+		throw new Error('user-settings.editorIndentation is invalid.');
 	}
 	if ('isSidebarOpen' in value && typeof value.isSidebarOpen !== 'boolean') {
 		throw new Error('user-settings.isSidebarOpen must contain a boolean.');

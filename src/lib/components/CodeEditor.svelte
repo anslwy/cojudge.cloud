@@ -1,6 +1,6 @@
 <script lang="ts">
     import type * as Monaco from 'monaco-editor';
-    import { attachVisualCursorFix, configureMonacoVim } from '$lib/utils/vimMode';
+    import { attachVisualCursorFix, configureMonacoVim, createHistoryAwareStatusBar, patchMonacoVimKeyName } from '$lib/utils/vimMode';
     import { isDebugSupported } from '$lib/utils/util';
     import { canInspectToken, isBreakpointCandidate, type SourceToken } from '$lib/utils/debugSource';
     import { onMount } from 'svelte';
@@ -9,6 +9,7 @@
     export let fontSize: number = 14;
     export let theme: 'dark' | 'light' = 'light';
     export let vimMode: 'off' | 'on' = 'off';
+    export let indentation: '2-spaces' | '4-spaces' | 'tab' = '4-spaces';
     export let readOnly: boolean = false;
     export let viewState: string | null = null;
     export let breakpoints: number[] = [];
@@ -23,12 +24,34 @@
     let editorElement: HTMLDivElement;
     let monacoRef: any;
     let vimModeInstance: any = null;
+    let vimStatusBarClass: any = null;
     let disposeVisualCursorFix: (() => void) | null = null;
     let vimStatusElement: HTMLDivElement;
     let bpDecos: string[] = [];
     let activeLineDecos: string[] = [];
     let hoverDisposable: Monaco.IDisposable | null = null;
     let tokenCache: { model: Monaco.editor.ITextModel; version: number; language: string; lines: SourceToken[][] } | null = null;
+
+    function indentationOptions(value: typeof indentation): { tabSize: number; insertSpaces: boolean } {
+        if (value === '2-spaces') return { tabSize: 2, insertSpaces: true };
+        if (value === 'tab') return { tabSize: 4, insertSpaces: false };
+        return { tabSize: 4, insertSpaces: true };
+    }
+
+    function applyIndentation(value: typeof indentation) {
+        if (!editor || !monacoRef) return;
+        const { tabSize, insertSpaces } = indentationOptions(value);
+        try {
+            editor.updateOptions({ tabSize, insertSpaces, detectIndentation: false, trimAutoWhitespace: true });
+        } catch {
+            // ignore option update failures; editor still works
+        }
+        try {
+            editor.getModel()?.updateOptions({ tabSize, insertSpaces, trimAutoWhitespace: true });
+        } catch {
+            // ignore model option update failures
+        }
+    }
 
     function sourceTokens(model: Monaco.editor.ITextModel): SourceToken[][] {
         const version = model.getVersionId();
@@ -175,9 +198,11 @@
             import('monaco-vim')
         ]).then(([monaco, vim]) => {
             if (disposed) return;
-            const { initVimMode, VimMode } = vim as any;
+            const { initVimMode, VimMode, StatusBar } = vim as any;
             monacoRef = monaco;
             configureMonacoVim(VimMode.Vim);
+            patchMonacoVimKeyName(VimMode);
+            vimStatusBarClass = StatusBar ? createHistoryAwareStatusBar(StatusBar) : null;
             
             monaco.editor.defineTheme('custom-dark', {
                 base: 'vs-dark',
@@ -223,6 +248,7 @@
 
             const themeId = theme === 'light' ? 'custom-light' : 'custom-dark';
 
+            const initialIndent = indentationOptions(indentation);
             editor = monaco.editor.create(editorElement, {
                 value,
                 language,
@@ -232,10 +258,20 @@
                 fontSize,
                 readOnly,
                 glyphMargin: true,
+                tabSize: initialIndent.tabSize,
+                insertSpaces: initialIndent.insertSpaces,
+                detectIndentation: false,
+                trimAutoWhitespace: true,
+                autoIndent: 'full',
                 minimap: {
                     enabled: false
                 }
             });
+            try {
+                editor.getModel()?.updateOptions({ tabSize: initialIndent.tabSize, insertSpaces: initialIndent.insertSpaces, trimAutoWhitespace: true });
+            } catch {
+                // ignore model option update failures
+            }
 
             editor.onMouseDown((e: any) => {
                 if (!editor || !e.target.position || !isDebugSupported(language)) return;
@@ -271,7 +307,9 @@
             const enableVimMode = (initFn: any) => {
                 if (!editor) return;
                 if (!vimModeInstance) {
-                    vimModeInstance = initFn(editor, vimStatusElement);
+                    vimModeInstance = vimStatusBarClass
+                        ? initFn(editor, vimStatusElement, vimStatusBarClass)
+                        : initFn(editor, vimStatusElement);
                     try {
                         disposeVisualCursorFix?.();
                     } catch {
@@ -336,11 +374,23 @@
     }
 
     $: if (editor && typeof vimMode === 'string') {
-        import('monaco-vim').then(({ initVimMode }) => {
+        import('monaco-vim').then((mod: any) => {
+            const { initVimMode, VimMode, StatusBar } = mod;
             if (!editor) return;
+            try {
+                if (VimMode?.Vim) configureMonacoVim(VimMode.Vim);
+                if (VimMode) patchMonacoVimKeyName(VimMode);
+                if (StatusBar && !vimStatusBarClass) {
+                    vimStatusBarClass = createHistoryAwareStatusBar(StatusBar);
+                }
+            } catch {
+                // ignore vim setup failures; editor still works without vim
+            }
             if (vimMode === 'on') {
                 if (!vimModeInstance) {
-                    vimModeInstance = initVimMode(editor, vimStatusElement);
+                    vimModeInstance = vimStatusBarClass
+                        ? initVimMode(editor, vimStatusElement, vimStatusBarClass)
+                        : initVimMode(editor, vimStatusElement);
                     try {
                         disposeVisualCursorFix?.();
                     } catch {
@@ -369,6 +419,10 @@
 
     $: if (editor && typeof readOnly === 'boolean') {
         editor.updateOptions({ readOnly });
+    }
+
+    $: if (editor && monacoRef && typeof indentation === 'string') {
+        applyIndentation(indentation);
     }
 
     // Update editor content when `value` prop changes externally (e.g., language switch)
@@ -431,7 +485,6 @@
         background-color: var(--color-bg);
         border-top: 1px solid var(--color-border);
         color: var(--color-text-secondary);
-        text-transform: uppercase;
         font-weight: 600;
         letter-spacing: 0.05em;
     }
