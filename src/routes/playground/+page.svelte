@@ -9,6 +9,7 @@
     import WhiteboardIcon from '$lib/components/WhiteboardIcon.svelte';
     import Whiteboard from '$lib/components/Whiteboard.svelte';
     import { showAlert, showChoice, showConfirm } from '$lib/dialogs';
+    import { MAX_PERSISTED_LOG_CHARS, MAX_PERSISTED_OUTPUT_CHARS, truncateTail } from '$lib/persistLimits';
     import { consumeForkTransfer } from '$lib/forkTransfer';
     import { ensureAuthenticated, initFirebase } from '$lib/firebase';
     import { isDesktopRuntime } from '$lib/firebaseSettings';
@@ -79,10 +80,13 @@ func main() {
     // your code goes here
 }`,
         typescript: `// your code goes here`,
+        php: `<?php
+// your code goes here
+echo "hello\\n";`,
         plaintext: ``,
         markdown: ``
     };
-    const programmingLanguages: ProgrammingLanguage[] = ['java', 'cpp', 'python', 'typescript', 'csharp', 'rust', 'go', 'plaintext', 'markdown'];
+    const programmingLanguages: ProgrammingLanguage[] = ['java', 'cpp', 'python', 'typescript', 'php', 'csharp', 'rust', 'go', 'plaintext', 'markdown'];
 
     // Tabs are grouped by fileId (language-agnostic). Folders are not tabs.
     type TabMeta = { fileId: string; fileName: string; isOpen: boolean; lastUpdated?: number; type?: 'editor' | 'preview' | 'whiteboard'; sourceFileId?: string };
@@ -1015,6 +1019,7 @@ func main() {
         rust: '.rs',
         go: '.go',
         typescript: '.ts',
+        php: '.php',
         plaintext: '.txt',
         markdown: '.md'
     };
@@ -1071,6 +1076,8 @@ func main() {
             case '.mjs':
             case '.cjs':
                 return 'typescript';
+            case '.php':
+                return 'php';
             case '.md':
             case '.markdown':
                 return 'markdown';
@@ -2188,8 +2195,10 @@ func main() {
                 if (existingFile) {
                     existingFile.content = code;
                     existingFile.viewState = latestViewState;
-                    existingFile.output = output;
-                    existingFile.logs = logs;
+                    // Run output/logs are regenerable display state: cap what is
+                    // persisted so a runaway run can never wedge localStorage.
+                    existingFile.output = truncateTail(output, MAX_PERSISTED_OUTPUT_CHARS);
+                    existingFile.logs = truncateTail(logs, MAX_PERSISTED_LOG_CHARS);
                     existingFile.lastUpdated = now;
                 } else {
                     const sibling = files.find((x) => x.fileId === targetFileId);
@@ -2199,8 +2208,8 @@ func main() {
                         language: targetLanguage,
                         content: code,
                         viewState: latestViewState,
-                        output: output,
-                        logs: logs,
+                        output: truncateTail(output, MAX_PERSISTED_OUTPUT_CHARS),
+                        logs: truncateTail(logs, MAX_PERSISTED_LOG_CHARS),
                         isActive: false,
                         isOpen: targetTab.isOpen,
                         lastUpdated: now,
@@ -7354,6 +7363,7 @@ func main() {
                         <option value="cpp">C++</option>
                         <option value="python">Python</option>
                         <option value="typescript">TypeScript</option>
+                        <option value="php">PHP</option>
                         <option value="csharp">C#</option>
                         <option value="rust">Rust</option>
                         <option value="go">Go</option>
