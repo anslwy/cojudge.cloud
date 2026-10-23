@@ -1,4 +1,6 @@
 import type { Param } from "./util";
+import type { InteractiveConfig } from "./interactiveUtil";
+import { interactiveBudget, isTranscriptKind } from "./interactiveUtil";
 import { extractOperations } from "./util";
 import { env } from '$env/dynamic/private';
 
@@ -633,6 +635,114 @@ ${branches}
 }`;
 }
 
+export const goMasterClass = `
+type Master struct {
+    secret string
+    wordSet map[string]bool
+    maxGuesses int
+    guessCount int
+    solved bool
+    history []string
+    scores []int
+}
+
+func NewMaster(secret string, wordlist []string, maxGuesses int) *Master {
+    ws := make(map[string]bool)
+    for _, w := range wordlist {
+        ws[w] = true
+    }
+    return &Master{secret: secret, wordSet: ws, maxGuesses: maxGuesses}
+}
+
+func (m *Master) Guess(word string) int {
+    m.guessCount++
+    m.history = append(m.history, word)
+    var res int
+    if !m.wordSet[word] {
+        res = -1
+    } else {
+        n := len(word)
+        if len(m.secret) < n {
+            n = len(m.secret)
+        }
+        c := 0
+        for i := 0; i < n; i++ {
+            if word[i] == m.secret[i] {
+                c++
+            }
+        }
+        res = c
+        if word == m.secret {
+            m.solved = true
+        }
+    }
+    m.scores = append(m.scores, res)
+    return res
+}
+`;
+
+export function generateGoInteractiveRunner(
+    functionName: string,
+    testCases: any[],
+    interactive: InteractiveConfig,
+): string {
+    if (!isTranscriptKind(interactive.kind)) {
+        return generateGoJudgeRunner(functionName, testCases, interactive);
+    }
+    const fnName = goFunctionName(functionName);
+    const maxG = interactive.maxGuesses;
+    const secretField = interactive.secretField;
+    const calls = testCases
+        .map((tc, caseIndex) => {
+            const wlArg = goGetFullParam([{ name: 'wordlist', type: 'string_array' } as Param], tc);
+            const rawSec = String((tc as any)[secretField] ?? '');
+            return `{
+        __wl := ${wlArg}
+        __sec := ${goEscapeStringLiteral(rawSec)}
+        __m := NewMaster(__sec, __wl, ${maxG})
+        __t0 := time.Now()
+        func() {
+            defer func() {
+                if r := recover(); r != nil {
+                    fmt.Println("ERROR:", r)
+                }
+            }()
+            ${fnName}(__wl, __m)
+        }()
+        __dt := time.Since(__t0).Nanoseconds()
+        fmt.Println(":::TIME:::" + strconv.FormatInt(__dt, 10))
+        for __k := range __m.history {
+            fmt.Printf("guess #%d: %s -> %d\\n", __k+1, __m.history[__k], __m.scores[__k])
+        }
+        __tr := "failed:" + strconv.Itoa(__m.guessCount)
+        if __m.solved && __m.guessCount <= ${maxG} {
+            __tr = "solved:" + strconv.Itoa(__m.guessCount)
+        }
+        fmt.Println(":::RESULT:::" + __tr)
+        fmt.Println("---")
+    }`;
+        })
+        .join("\n        ");
+
+    return `package main
+
+${goImports}
+${goListNodeClass}
+
+${goTreeNodeClass}
+
+${goGraphNodeClass}
+
+${goHelperMethods}
+
+${goMasterClass}
+
+func main() {
+    ${calls}
+}
+`;
+}
+
 export function generateGoRunner(
     functionName: string,
     params: Param[],
@@ -763,4 +873,238 @@ func (this *${className}) FindMedian() float64 {
 func ${fnName}(${paramStrs.join(', ')}) ${returnType} {
     
 }`;
+}
+
+export const goGuessGameClass = `
+type GuessGame struct {
+    pick int
+    callCount int
+    history []int
+    scores []int
+}
+
+func NewGuessGame(pick int) *GuessGame {
+    return &GuessGame{pick: pick}
+}
+
+func (g *GuessGame) Guess(num int) int {
+    g.callCount++
+    g.history = append(g.history, num)
+    var res int
+    if num > g.pick {
+        res = -1
+    } else if num < g.pick {
+        res = 1
+    } else {
+        res = 0
+    }
+    g.scores = append(g.scores, res)
+    return res
+}
+`;
+
+export const goVersionControlClass = `
+type VersionControl struct {
+    bad int
+    callCount int
+    history []int
+    scores []bool
+}
+
+func NewVersionControl(bad int) *VersionControl {
+    return &VersionControl{bad: bad}
+}
+
+func (v *VersionControl) IsBadVersion(version int) bool {
+    v.callCount++
+    v.history = append(v.history, version)
+    res := version >= v.bad
+    v.scores = append(v.scores, res)
+    return res
+}
+`;
+
+export const goArrayReaderClass = `
+type ArrayReader struct {
+    arr []int
+    callCount int
+}
+
+func NewArrayReader(arr []int) *ArrayReader {
+    return &ArrayReader{arr: arr}
+}
+
+func (r *ArrayReader) Get(index int) int {
+    r.callCount++
+    if index < 0 || index >= len(r.arr) {
+        return 2147483647
+    }
+    return r.arr[index]
+}
+`;
+
+export const goMountainArrayClass = `
+type MountainArray struct {
+    arr []int
+    callCount int
+}
+
+func NewMountainArray(arr []int) *MountainArray {
+    return &MountainArray{arr: arr}
+}
+
+func (m *MountainArray) Get(index int) int {
+    m.callCount++
+    return m.arr[index]
+}
+
+func (m *MountainArray) Length() int {
+    return len(m.arr)
+}
+`;
+
+export const goRelationClass = `
+type Relation struct {
+    graph [][]int
+    callCount int
+}
+
+func NewRelation(graph [][]int) *Relation {
+    return &Relation{graph: graph}
+}
+
+func (r *Relation) Knows(a int, b int) bool {
+    r.callCount++
+    return r.graph[a][b] == 1
+}
+
+func (r *Relation) Size() int {
+    return len(r.graph)
+}
+`;
+
+export function goJudgeClass(kind: string): string {
+    switch (kind) {
+        case 'guess-word': return goMasterClass;
+        case 'guess-number': return goGuessGameClass;
+        case 'first-bad': return goVersionControlClass;
+        case 'array-reader': return goArrayReaderClass;
+        case 'mountain-array': return goMountainArrayClass;
+        case 'celebrity': return goRelationClass;
+        default: throw new Error(`Unknown interactive kind: ${kind}`);
+    }
+}
+
+function goJudgeSetup(tc: any, idx: number, interactive: InteractiveConfig): { decls: string; call: string; counter: string; history: string } {
+    const kind = interactive.kind;
+    const secretField = interactive.secretField;
+    const arrStr = (field: string) => {
+        const raw = tc[field];
+        if (Array.isArray(raw)) { try { return JSON.stringify(raw); } catch { return '[]'; } }
+        return String(raw ?? '[]');
+    };
+    if (kind === 'guess-number') {
+        return {
+            decls: `__n := ${tc['n']}\n__g := NewGuessGame(${tc[secretField]})`,
+            call: `__FN__(__n, __g)`,
+            counter: `__g.callCount`,
+            history: `for __k := range __g.history {\nfmt.Printf("guess #%d: %d -> %d\\n", __k+1, __g.history[__k], __g.scores[__k])\n}`,
+        };
+    }
+    if (kind === 'first-bad') {
+        return {
+            decls: `__n := ${tc['n']}\n__vc := NewVersionControl(${tc[secretField]})`,
+            call: `__FN__(__n, __vc)`,
+            counter: `__vc.callCount`,
+            history: `for __k := range __vc.history {\nfmt.Printf("check #%d: %d -> %t\\n", __k+1, __vc.history[__k], __vc.scores[__k])\n}`,
+        };
+    }
+    if (kind === 'array-reader') {
+        return {
+            decls: `__r := NewArrayReader(toIntArray(${goEscapeStringLiteral(arrStr(secretField))}))\n__t := ${tc['target']}`,
+            call: `__FN__(__r, __t)`,
+            counter: `__r.callCount`,
+            history: ``,
+        };
+    }
+    if (kind === 'mountain-array') {
+        return {
+            decls: `__mt := NewMountainArray(toIntArray(${goEscapeStringLiteral(arrStr(secretField))}))\n__t := ${tc['target']}`,
+            call: `__FN__(__t, __mt)`,
+            counter: `__mt.callCount`,
+            history: ``,
+        };
+    }
+    if (kind === 'celebrity') {
+        return {
+            decls: `__rel := NewRelation(toIntArray2d(${goEscapeStringLiteral(arrStr(secretField))}))\n__n := __rel.Size()`,
+            call: `__FN__(__n, __rel)`,
+            counter: `__rel.callCount`,
+            history: ``,
+        };
+    }
+    throw new Error(`Unknown interactive kind: ${kind}`);
+}
+
+export function generateGoJudgeRunner(
+    functionName: string,
+    testCases: any[],
+    interactive: InteractiveConfig,
+): string {
+    const fnName = goFunctionName(functionName);
+    const calls = testCases
+        .map((tc, caseIndex) => {
+            const budget = interactiveBudget(interactive, tc);
+            const setup = goJudgeSetup(tc, caseIndex, interactive);
+            const call = setup.call.replace('__FN__', fnName);
+            const hist = setup.history ? `\n${setup.history}` : '';
+            return `{
+        ${setup.decls.split('\n').join('\n        ')}
+        __t0 := time.Now()
+        __res := 0
+        __ok := true
+        func() {
+            defer func() {
+                if r := recover(); r != nil {
+                    fmt.Println("ERROR:", r)
+                    __ok = false
+                }
+            }()
+            __res = ${call}
+        }()
+        __dt := time.Since(__t0).Nanoseconds()
+        fmt.Println(":::TIME:::" + strconv.FormatInt(__dt, 10))${hist}
+        __calls := ${setup.counter}
+        fmt.Printf("api calls: %d (budget ${budget})\\n", __calls)
+        __tr := "error"
+        if __ok {
+            if __calls > ${budget} {
+                __tr = "over-budget:" + strconv.Itoa(__calls)
+            } else {
+                __tr = displayOutput(__res)
+            }
+        }
+        fmt.Println(":::RESULT:::" + __tr)
+        fmt.Println("---")
+    }`;
+        })
+        .join("\n        ");
+
+    return `package main
+
+${goImports}
+${goListNodeClass}
+
+${goTreeNodeClass}
+
+${goGraphNodeClass}
+
+${goHelperMethods}
+
+${goJudgeClass(interactive.kind)}
+
+func main() {
+    ${calls}
+}
+`;
 }

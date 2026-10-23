@@ -1,11 +1,12 @@
-import { generateJavaRunner, generateJavaRunnerWithMarker, generateJavaClassSolution, javaImage, javaListNodeClass, javaTreeNodeClass, javaGraphNodeClass } from "$lib/utils/javaUtil";
+import { generateJavaRunner, generateJavaRunnerWithMarker, generateJavaClassSolution, generateJavaInteractiveRunner, generateJavaInteractiveRunnerWithMarker, javaJudgeClass, javaImage, javaListNodeClass, javaTreeNodeClass, javaGraphNodeClass } from "$lib/utils/javaUtil";
+import { getInteractive, judgeFileForKind } from "$lib/utils/interactiveUtil";
 import { extractOperations } from "$lib/utils/util";
 import { ensureImageAvailable, EXECUTION_TIMEOUT_SECONDS, LINUX_TIMEOUT_CODE, TIMEOUT_MESSAGE } from "$lib/utils/util";
 import Dockerode from "dockerode";
 import fs from 'fs/promises';
 import tar from 'tar-stream';
 import { resolveProblemFile } from "$lib/server/contentPaths";
-import { ProgramRunner } from "./ProgramRunner";
+import { ProgramRunner, RunnerCrashError } from "./ProgramRunner";
 import ContainerPool from "./ContainerPool";
 import { cojudgeContainerLabels } from "$lib/server/containerSession";
 const docker = new Dockerode();
@@ -35,13 +36,27 @@ export class JavaRunner extends ProgramRunner {
 
             if (hasMarker) {
                 this.useMarker = true;
-                runnerCode = generateJavaRunnerWithMarker(
-                    problemData.functionName, problemData.params, this.testCases, problemData.outputType, problemData.checkGraphClone
-                );
+                const interactive = getInteractive(problemData);
+                if (interactive) {
+                    runnerCode = generateJavaInteractiveRunnerWithMarker(
+                        problemData.functionName, problemData.params, this.testCases, interactive
+                    );
+                } else {
+                    runnerCode = generateJavaRunnerWithMarker(
+                        problemData.functionName, problemData.params, this.testCases, problemData.outputType, problemData.checkGraphClone
+                    );
+                }
             } else {
-                runnerCode = generateJavaRunner(
-                    problemData.functionName, problemData.params, this.testCases, problemData.outputType, problemData.checkGraphClone
-                );
+                const interactive = getInteractive(problemData);
+                if (interactive) {
+                    runnerCode = generateJavaInteractiveRunner(
+                        problemData.functionName, this.testCases, interactive
+                    );
+                } else {
+                    runnerCode = generateJavaRunner(
+                        problemData.functionName, problemData.params, this.testCases, problemData.outputType, problemData.checkGraphClone
+                    );
+                }
             }
 
             this.container = await ContainerPool.acquire(javaImage);
@@ -61,6 +76,10 @@ export class JavaRunner extends ProgramRunner {
             pack.entry({ name: 'ListNode.java' }, Buffer.from(javaListNodeClass));
             pack.entry({ name: 'TreeNode.java' }, Buffer.from(javaTreeNodeClass));
             pack.entry({ name: 'GraphNode.java' }, Buffer.from(javaGraphNodeClass));
+            if (getInteractive(problemData)) {
+                const kind = problemData.interactive?.kind ?? 'guess-word';
+                pack.entry({ name: judgeFileForKind(kind, 'java')! }, Buffer.from(javaJudgeClass(kind)));
+            }
             if (hasMarker) {
                 const markerCode = await fs.readFile(markerPath, 'utf-8');
                 pack.entry({ name: 'Marker.java' }, Buffer.from(markerCode));
@@ -138,12 +157,13 @@ export class JavaRunner extends ProgramRunner {
                 throw new Error(TIMEOUT_MESSAGE);
             }
             if (inspect.ExitCode !== 0) {
-                throw new Error(cleanedStderr || stdout);
+                throw new RunnerCrashError(cleanedStderr || stdout, stdout);
             }
             stdout = this.parseInternalTiming(stdout);
             const results = stdout.split('---\n').filter(res => res.trim() !== '');
             return results;
         } catch (error: any) {
+            if (error && typeof error.partialStdout === 'string') throw error;
             throw new Error(`${error}`);
         } finally {
             if (this.container) {

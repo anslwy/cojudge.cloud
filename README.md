@@ -1,11 +1,22 @@
-[![CI](https://github.com/cojudge/cojudge/actions/workflows/test.yml/badge.svg)](https://github.com/cojudge/cojudge/actions/workflows/test.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/cojudge/cojudge?include_prereleases)](https://github.com/cojudge/cojudge/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![GitHub Stars](https://img.shields.io/github/stars/cojudge/cojudge?style=social)](https://github.com/cojudge/cojudge)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="src-tauri/icons/Square71x71Logo-white.png">
+    <img src="src-tauri/icons/Square71x71Logo.png" alt="Cojudge" width="71">
+  </picture>
+</p>
 
-> Solve classic algorithmic problems without the internet or having to deal with installing runtimes. No discussion forum, no LLM assistant, not even the internet. Solve the curated list with just you, the problem and the judge.
+<h1 align="center">Cojudge</h1>
 
-> This is not intended as a replacement for LeetCode. Use it as a preliminary secondary judge with minimal testcases to practice without internet access, then run the full submission on LeetCode once you are online and ready.
+<p align="center">Solve classic algorithmic problems without the internet or having to deal with installing runtimes. No discussion forum, no LLM assistant, not even the internet. Solve the curated list with just you, the problem and the judge.</p>
+
+<p align="center">
+  <a href="https://github.com/cojudge/cojudge/actions/workflows/test.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/cojudge/cojudge/test.yml?branch=main&label=CI&style=flat-square"></a>
+  <a href="https://github.com/cojudge/cojudge/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/cojudge/cojudge?include_prereleases&style=flat-square"></a>
+  <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/github/license/cojudge/cojudge?style=flat-square"></a>
+  <a href="https://github.com/cojudge/cojudge"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/cojudge/cojudge?style=flat-square"></a>
+</p>
+
+*This is not intended as a replacement for LeetCode. Use it as a preliminary secondary judge with minimal testcases to practice without internet access, then run the full submission on LeetCode once you are online and ready.*
 
 |![Web UI](/screenshots/problem.png) | ![CLI](/screenshots/cli.png) |
 |:---:|:---:|
@@ -45,6 +56,18 @@
 
 #### Desktop app
 Download the latest installer for macOS, Windows, or Linux from [GitHub Releases](https://github.com/cojudge/cojudge/releases). Desktop builds bundle Node.js; Docker is only required when running, submitting, or debugging code. After installing the app, open the homepage menu and choose **CLI** to put `cojudge` on your PATH (no separate Node.js install).
+
+On Windows, the easiest install is via winget:
+
+```powershell
+winget install -e --id Cojudge.Cojudge
+```
+
+Upgrade later with:
+
+```powershell
+winget upgrade Cojudge.Cojudge
+```
 
 #### CLI
 If you are not using the desktop app, the easiest way to install the `cojudge` CLI without dealing with NPM permission issues is to run our install script:

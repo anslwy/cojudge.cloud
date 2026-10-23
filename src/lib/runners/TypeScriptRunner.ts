@@ -1,10 +1,11 @@
-import { tsImage, generateTypeScriptRunner, tsGetTypeImports, tsListNodeClass, tsTreeNodeClass, tsGraphNodeClass } from "$lib/utils/tsUtil";
+import { tsImage, generateTypeScriptRunner, generateTypeScriptInteractiveRunner, tsJudgeClass, tsGetTypeImports, tsListNodeClass, tsTreeNodeClass, tsGraphNodeClass } from "$lib/utils/tsUtil";
+import { getInteractive, judgeFileForKind } from "$lib/utils/interactiveUtil";
 import { ensureImageAvailable, EXECUTION_TIMEOUT_SECONDS, LINUX_TIMEOUT_CODE, TIMEOUT_MESSAGE, type Param } from "$lib/utils/util";
 import Dockerode from "dockerode";
 import fs from 'fs/promises';
 import tar from 'tar-stream';
 import { resolveProblemFile } from "$lib/server/contentPaths";
-import { ProgramRunner } from "./ProgramRunner";
+import { ProgramRunner, RunnerCrashError } from "./ProgramRunner";
 import ContainerPool from "./ContainerPool";
 import { cojudgeContainerLabels } from "$lib/server/containerSession";
 
@@ -25,9 +26,14 @@ export class TypeScriptRunner extends ProgramRunner {
             const problemData = JSON.parse(problemContent);
 
             const hasMarker = false; // TypeScript doesn't use Marker.java pattern
-            const runnerCode = generateTypeScriptRunner(
-                problemData.functionName, problemData.params, this.testCases, problemData.outputType, problemData.checkGraphClone, problemData.classProblem?.userClassName
-            );
+            const interactive = getInteractive(problemData);
+            const runnerCode = interactive
+                ? generateTypeScriptInteractiveRunner(
+                    problemData.functionName, this.testCases, interactive
+                )
+                : generateTypeScriptRunner(
+                    problemData.functionName, problemData.params, this.testCases, problemData.outputType, problemData.checkGraphClone, problemData.classProblem?.userClassName
+                );
 
             this.container = await ContainerPool.acquire(tsImage);
             if (!this.container) {
@@ -61,6 +67,10 @@ export class TypeScriptRunner extends ProgramRunner {
             pack.entry({ name: 'ListNode.ts' }, Buffer.from(tsListNodeClass));
             pack.entry({ name: 'TreeNode.ts' }, Buffer.from(tsTreeNodeClass));
             pack.entry({ name: 'GraphNode.ts' }, Buffer.from(tsGraphNodeClass));
+            if (getInteractive(problemData)) {
+                const kind = problemData.interactive?.kind ?? 'guess-word';
+                pack.entry({ name: judgeFileForKind(kind, 'typescript')! }, Buffer.from(tsJudgeClass(kind)));
+            }
             if (problemData.classProblem) {
                 const className = problemData.classProblem.userClassName || 'MedianFinder';
                 pack.entry({ name: `${className}.ts` }, Buffer.from(prefix + this.code));
@@ -107,11 +117,12 @@ export class TypeScriptRunner extends ProgramRunner {
             const inspect = await exec.inspect();
             const cleanedStderr = this.parseMetricsFromStderr(stderr);
             if (inspect.ExitCode === LINUX_TIMEOUT_CODE) throw new Error(TIMEOUT_MESSAGE);
-            if (inspect.ExitCode !== 0) throw new Error(cleanedStderr || stdout);
+            if (inspect.ExitCode !== 0) throw new RunnerCrashError(cleanedStderr || stdout, stdout);
             stdout = this.parseInternalTiming(stdout);
             const results = stdout.split('---\n').filter((res) => res.trim() !== '');
             return results;
         } catch (error: any) {
+            if (error && typeof error.partialStdout === 'string') throw error;
             throw new Error(`${error}`);
         } finally {
             if (this.container) {

@@ -1,6 +1,49 @@
 import type { Param } from "./util";
+import type { InteractiveConfig } from "./interactiveUtil";
+import { interactiveBudget, isTranscriptKind } from "./interactiveUtil";
 
 export const javaImage = 'alpine/java:22-jdk';
+
+// Master judge for interactive guess-word problems. The runner builds one
+// per test case from (secret, wordlist); user code calls master.guess(word).
+export const javaMasterClass = `
+import java.util.*;
+public class Master {
+    private final String secret;
+    private final Set<String> wordSet;
+    private final int maxGuesses;
+    private int guessCount = 0;
+    private boolean solved = false;
+    private final List<String> history = new ArrayList<>();
+    private final List<Integer> scores = new ArrayList<>();
+    public Master(String secret, String[] wordlist, int maxGuesses) {
+        this.secret = secret;
+        this.wordSet = new HashSet<>(Arrays.asList(wordlist));
+        this.maxGuesses = maxGuesses;
+    }
+    public int guess(String word) {
+        guessCount++;
+        history.add(word);
+        int m;
+        if (!wordSet.contains(word)) {
+            m = -1;
+        } else {
+            m = 0;
+            int n = Math.min(word.length(), secret.length());
+            for (int i = 0; i < n; i++) if (word.charAt(i) == secret.charAt(i)) m++;
+            if (word.equals(secret)) solved = true;
+        }
+        scores.add(m);
+        return m;
+    }
+    public int getGuessCount() { return guessCount; }
+    public boolean isSolved() { return solved; }
+    public int getMaxGuesses() { return maxGuesses; }
+    public List<String> getHistory() { return history; }
+    public List<Integer> getScores() { return scores; }
+    public String getSecret() { return secret; }
+}
+`;
 
 export const javaListNodeClass = `
     public class ListNode {
@@ -690,6 +733,322 @@ export function generateJavaRunnerWithMarker(functionName: string, params: Param
                 `System.out.println("---");`
             ].join('\n');
         })
+        .join('\n        ');
+
+    return `
+import java.util.*;
+public class Main {
+    ${javaHelperMethods}
+    public static void main(String[] args) throws Exception {
+        Solution sol = new Solution();
+        Marker marker = new Marker();
+        ${testCalls}
+    }
+}`;
+
+}
+
+function javaInteractiveWordlistLiteral(tc: any, interactive: InteractiveConfig): string {
+    const raw = tc['wordlist'];
+    let strVal: string;
+    if (Array.isArray(raw)) {
+        try { strVal = JSON.stringify(raw); } catch { strVal = '[]'; }
+    } else {
+        strVal = String(raw ?? '[]');
+    }
+    return `to_string_array(${formatAndSplitJavaString(strVal)})`;
+}
+
+function javaInteractiveSecretLiteral(tc: any, interactive: InteractiveConfig): string {
+    return formatAndSplitJavaString(String(tc[interactive.secretField] ?? ''));
+}
+
+export function generateJavaInteractiveRunner(
+    functionName: string, testCases: any[], interactive: InteractiveConfig
+): string {
+    if (!isTranscriptKind(interactive.kind)) {
+        return generateJavaJudgeRunner(functionName, testCases, interactive);
+    }
+    const maxG = interactive.maxGuesses;
+    const testCalls = testCases
+        .map((tc, idx) => {
+            const wl = javaInteractiveWordlistLiteral(tc, interactive);
+            const sec = javaInteractiveSecretLiteral(tc, interactive);
+            return [
+                `String[] __wl${idx} = ${wl};`,
+                `String __sec${idx} = ${sec};`,
+                `Master __m${idx} = new Master(__sec${idx}, __wl${idx}, ${maxG});`,
+                `long __t${idx} = System.nanoTime();`,
+                `try { sol.${functionName}(__wl${idx}, __m${idx}); } catch (Exception __e) { System.out.println("ERROR: " + __e); }`,
+                `long __time${idx} = System.nanoTime() - __t${idx};`,
+                `System.out.println(":::TIME:::" + __time${idx});`,
+                `for (int __k${idx} = 0; __k${idx} < __m${idx}.getHistory().size(); __k${idx}++) {`,
+                `    System.out.println("guess #" + (__k${idx}+1) + ": " + __m${idx}.getHistory().get(__k${idx}) + " -> " + __m${idx}.getScores().get(__k${idx}));`,
+                `}`,
+                `String __tr${idx} = (__m${idx}.isSolved() && __m${idx}.getGuessCount() <= ${maxG}) ? ("solved:" + __m${idx}.getGuessCount()) : ("failed:" + __m${idx}.getGuessCount());`,
+                `System.out.println(":::RESULT:::" + __tr${idx});`,
+                `System.out.println("---");`
+            ].join('\n        ');
+        })
+        .join('\n        ');
+
+    return `
+import java.util.*;
+public class Main {
+    ${javaHelperMethods}
+    public static void main(String[] args) throws Exception {
+        Solution sol = new Solution();
+        ${testCalls}
+    }
+}`;
+}
+
+export function generateJavaInteractiveRunnerWithMarker(
+    functionName: string, params: Param[], testCases: any[], interactive: InteractiveConfig
+): string {
+    if (!isTranscriptKind(interactive.kind)) {
+        return generateJavaJudgeRunnerWithMarker(functionName, params, testCases, interactive);
+    }
+    const maxG = interactive.maxGuesses;
+    const testCalls = testCases
+        .map((tc, idx) => {
+            const wl = javaInteractiveWordlistLiteral(tc, interactive);
+            const sec = javaInteractiveSecretLiteral(tc, interactive);
+            const markerArgs = javaGetFullParam(params, tc);
+            return [
+                `String[] __wl${idx} = ${wl};`,
+                `String __sec${idx} = ${sec};`,
+                `Master __m${idx} = new Master(__sec${idx}, __wl${idx}, ${maxG});`,
+                `long __t${idx} = System.nanoTime();`,
+                `try { sol.${functionName}(__wl${idx}, __m${idx}); } catch (Exception __e) { System.out.println("ERROR: " + __e); }`,
+                `long __time${idx} = System.nanoTime() - __t${idx};`,
+                `System.out.println(":::TIME:::" + __time${idx});`,
+                `for (int __k${idx} = 0; __k${idx} < __m${idx}.getHistory().size(); __k${idx}++) {`,
+                `    System.out.println("guess #" + (__k${idx}+1) + ": " + __m${idx}.getHistory().get(__k${idx}) + " -> " + __m${idx}.getScores().get(__k${idx}));`,
+                `}`,
+                `String __tr${idx} = (__m${idx}.isSolved() && __m${idx}.getGuessCount() <= ${maxG}) ? ("solved:" + __m${idx}.getGuessCount()) : ("failed:" + __m${idx}.getGuessCount());`,
+                `System.out.println(":::RESULT:::" + __tr${idx});`,
+                `System.out.println(":::VERDICT:::" + marker.isCorrect(${markerArgs}, __tr${idx}));`,
+                `System.out.println(":::ANSWER:::" + displayOutput(__sec${idx}));`,
+                `System.out.println("---");`
+            ].join('\n        ');
+        })
+        .join('\n        ');
+
+    return `
+import java.util.*;
+public class Main {
+    ${javaHelperMethods}
+    public static void main(String[] args) throws Exception {
+        Solution sol = new Solution();
+        Marker marker = new Marker();
+        ${testCalls}
+    }
+}`;
+}
+
+export const javaGuessGameClass = `
+public class GuessGame {
+    private final int pick;
+    private int callCount = 0;
+    private final java.util.List<Integer> history = new java.util.ArrayList<>();
+    private final java.util.List<Integer> scores = new java.util.ArrayList<>();
+    public GuessGame(int pick) { this.pick = pick; }
+    public int guess(int num) {
+        callCount++;
+        history.add(num);
+        int r;
+        if (num > pick) r = -1;
+        else if (num < pick) r = 1;
+        else r = 0;
+        scores.add(r);
+        return r;
+    }
+    public int getCallCount() { return callCount; }
+    public java.util.List<Integer> getHistory() { return history; }
+    public java.util.List<Integer> getScores() { return scores; }
+}
+`;
+
+export const javaVersionControlClass = `
+public class VersionControl {
+    private final int bad;
+    private int callCount = 0;
+    private final java.util.List<Integer> history = new java.util.ArrayList<>();
+    private final java.util.List<Boolean> scores = new java.util.ArrayList<>();
+    public VersionControl(int bad) { this.bad = bad; }
+    public boolean isBadVersion(int version) {
+        callCount++;
+        history.add(version);
+        boolean r = version >= bad;
+        scores.add(r);
+        return r;
+    }
+    public int getCallCount() { return callCount; }
+    public java.util.List<Integer> getHistory() { return history; }
+    public java.util.List<Boolean> getScores() { return scores; }
+}
+`;
+
+export const javaArrayReaderClass = `
+public class ArrayReader {
+    private final int[] arr;
+    private int callCount = 0;
+    public ArrayReader(int[] arr) { this.arr = arr.clone(); }
+    public int get(int index) {
+        callCount++;
+        if (index < 0 || index >= arr.length) return 2147483647;
+        return arr[index];
+    }
+    public int getCallCount() { return callCount; }
+}
+`;
+
+export const javaMountainArrayClass = `
+public class MountainArray {
+    private final int[] arr;
+    private int callCount = 0;
+    public MountainArray(int[] arr) { this.arr = arr.clone(); }
+    public int get(int index) {
+        callCount++;
+        return arr[index];
+    }
+    public int length() { return arr.length; }
+    public int getCallCount() { return callCount; }
+}
+`;
+
+export const javaRelationClass = `
+public class Relation {
+    private final int[][] graph;
+    private int callCount = 0;
+    public Relation(int[][] graph) { this.graph = graph.clone(); }
+    public boolean knows(int a, int b) {
+        callCount++;
+        return graph[a][b] == 1;
+    }
+    public int getCallCount() { return callCount; }
+    public int size() { return graph.length; }
+}
+`;
+
+export function javaJudgeClass(kind: string): string {
+    switch (kind) {
+        case 'guess-word': return javaMasterClass;
+        case 'guess-number': return javaGuessGameClass;
+        case 'first-bad': return javaVersionControlClass;
+        case 'array-reader': return javaArrayReaderClass;
+        case 'mountain-array': return javaMountainArrayClass;
+        case 'celebrity': return javaRelationClass;
+        default: throw new Error(`Unknown interactive kind: ${kind}`);
+    }
+}
+
+function javaJudgeSetup(tc: any, idx: number, interactive: InteractiveConfig): { decls: string; call: string; counter: string; history: string } {
+    const kind = interactive.kind;
+    const secretField = interactive.secretField;
+    if (kind === 'guess-number') {
+        return {
+            decls: `int __n${idx} = ${tc['n']};\nGuessGame __g${idx} = new GuessGame(${tc[secretField]});`,
+            call: `sol.__FN__(__n${idx}, __g${idx})`,
+            counter: `__g${idx}.getCallCount()`,
+            history: `for (int __k${idx} = 0; __k${idx} < __g${idx}.getHistory().size(); __k${idx}++) {\n    System.out.println("guess #" + (__k${idx}+1) + ": " + __g${idx}.getHistory().get(__k${idx}) + " -> " + __g${idx}.getScores().get(__k${idx}));\n}`,
+        };
+    }
+    if (kind === 'first-bad') {
+        return {
+            decls: `int __n${idx} = ${tc['n']};\nVersionControl __vc${idx} = new VersionControl(${tc[secretField]});`,
+            call: `sol.__FN__(__n${idx}, __vc${idx})`,
+            counter: `__vc${idx}.getCallCount()`,
+            history: `for (int __k${idx} = 0; __k${idx} < __vc${idx}.getHistory().size(); __k${idx}++) {\n    System.out.println("check #" + (__k${idx}+1) + ": " + __vc${idx}.getHistory().get(__k${idx}) + " -> " + __vc${idx}.getScores().get(__k${idx}));\n}`,
+        };
+    }
+    if (kind === 'array-reader') {
+        const raw = tc[secretField];
+        const strVal = Array.isArray(raw) ? JSON.stringify(raw) : String(raw ?? '[]');
+        return {
+            decls: `ArrayReader __r${idx} = new ArrayReader(to_int_array(${formatAndSplitJavaString(strVal)}));\nint __tgt${idx} = ${tc['target']};`,
+            call: `sol.__FN__(__r${idx}, __tgt${idx})`,
+            counter: `__r${idx}.getCallCount()`,
+            history: ``,
+        };
+    }
+    if (kind === 'mountain-array') {
+        const raw = tc[secretField];
+        const strVal = Array.isArray(raw) ? JSON.stringify(raw) : String(raw ?? '[]');
+        return {
+            decls: `MountainArray __mt${idx} = new MountainArray(to_int_array(${formatAndSplitJavaString(strVal)}));\nint __tgt${idx} = ${tc['target']};`,
+            call: `sol.__FN__(__tgt${idx}, __mt${idx})`,
+            counter: `__mt${idx}.getCallCount()`,
+            history: ``,
+        };
+    }
+    if (kind === 'celebrity') {
+        const raw = tc[secretField];
+        const strVal = Array.isArray(raw) ? JSON.stringify(raw) : String(raw ?? '[]');
+        return {
+            decls: `Relation __rel${idx} = new Relation(to_int_array_2d(${formatAndSplitJavaString(strVal)}));\nint __n${idx} = __rel${idx}.size();`,
+            call: `sol.__FN__(__n${idx}, __rel${idx})`,
+            counter: `__rel${idx}.getCallCount()`,
+            history: ``,
+        };
+    }
+    throw new Error(`Unknown interactive kind: ${kind}`);
+}
+
+function javaJudgeTestLines(tc: any, idx: number, functionName: string, interactive: InteractiveConfig, markerArgs: string | null): string[] {
+    const budget = interactiveBudget(interactive, tc);
+    const setup = javaJudgeSetup(tc, idx, interactive);
+    const call = setup.call.replace('__FN__', functionName);
+    const lines = [
+        ...setup.decls.split('\n'),
+        `long __t${idx} = System.nanoTime();`,
+        `int __res${idx} = 0;`,
+        `boolean __ok${idx} = true;`,
+        `try { __res${idx} = ${call}; } catch (Exception __e) { __ok${idx} = false; System.out.println("ERROR: " + __e); }`,
+        `long __time${idx} = System.nanoTime() - __t${idx};`,
+        `System.out.println(":::TIME:::" + __time${idx});`,
+    ];
+    if (setup.history) lines.push(setup.history);
+    lines.push(
+        `int __calls${idx} = ${setup.counter};`,
+        `System.out.println("api calls: " + __calls${idx} + " (budget ${budget})");`,
+        `String __tr${idx} = (!__ok${idx}) ? "error" : ((__calls${idx} > ${budget}) ? ("over-budget:" + __calls${idx}) : ("" + __res${idx}));`,
+        `System.out.println(":::RESULT:::" + __tr${idx});`,
+    );
+    if (markerArgs !== null) {
+        lines.push(
+            `System.out.println(":::VERDICT:::" + ((!__ok${idx} || __calls${idx} > ${budget}) ? "false" : marker.isCorrect(${markerArgs}, __res${idx})));`,
+            `System.out.println(":::ANSWER:::" + displayOutput(marker.${functionName}(${markerArgs})));`,
+        );
+    }
+    lines.push(`System.out.println("---");`);
+    return lines;
+}
+
+export function generateJavaJudgeRunner(
+    functionName: string, testCases: any[], interactive: InteractiveConfig
+): string {
+    const testCalls = testCases
+        .map((tc, idx) => javaJudgeTestLines(tc, idx, functionName, interactive, null).join('\n        '))
+        .join('\n        ');
+
+    return `
+import java.util.*;
+public class Main {
+    ${javaHelperMethods}
+    public static void main(String[] args) throws Exception {
+        Solution sol = new Solution();
+        ${testCalls}
+    }
+}`;
+}
+
+export function generateJavaJudgeRunnerWithMarker(
+    functionName: string, params: Param[], testCases: any[], interactive: InteractiveConfig
+): string {
+    const testCalls = testCases
+        .map((tc, idx) => javaJudgeTestLines(tc, idx, functionName, interactive, javaGetFullParam(params, tc)).join('\n        '))
         .join('\n        ');
 
     return `

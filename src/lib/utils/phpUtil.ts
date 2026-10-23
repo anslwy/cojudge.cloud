@@ -1,6 +1,13 @@
 import type { Param } from "./util";
+import type { InteractiveConfig } from "./interactiveUtil";
+import { interactiveBudget, isTranscriptKind } from "./interactiveUtil";
 
-export const phpImage = 'php:8.3-cli';
+// Docker image for running PHP code. Override via COJUDGE_PHP_IMAGE env var.
+// For offline-friendly runs with pre-installed `time`:
+// see docker/php/Dockerfile for instructions.
+// NOTE: uses process.env (not $env/dynamic/private) so this module stays
+// importable from plain vitest, like DebugRunner.ts does.
+export const phpImage = process.env.COJUDGE_PHP_IMAGE || 'php:8.3-cli';
 
 export const phpListNodeClass = `<?php
 class ListNode {
@@ -463,6 +470,65 @@ ${calls}
 `;
 }
 
+export const phpMasterClass = `class Master {
+    private $secret;
+    private $wordSet = [];
+    private $maxGuesses;
+    public $guessCount = 0;
+    public $solved = false;
+    public $history = [];
+    public $scores = [];
+    public function __construct($secret, $wordlist, $maxGuesses = 10) {
+        $this->secret = $secret;
+        foreach ($wordlist as $w) { $this->wordSet[$w] = true; }
+        $this->maxGuesses = $maxGuesses;
+    }
+    public function guess($word) {
+        $this->guessCount++;
+        $this->history[] = $word;
+        if (!isset($this->wordSet[$word])) {
+            $m = -1;
+        } else {
+            $m = 0;
+            $n = min(strlen($word), strlen($this->secret));
+            for ($i = 0; $i < $n; $i++) if ($word[$i] === $this->secret[$i]) $m++;
+            if ($word === $this->secret) $this->solved = true;
+        }
+        $this->scores[] = $m;
+        return $m;
+    }
+}
+`;
+
+function phpEscapeForSingleQuote(s: string): string {
+    return String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+export function generatePhpInteractiveRunner(functionName: string, testCases: any[], interactive: InteractiveConfig): string {
+    if (!isTranscriptKind(interactive.kind)) {
+        return generatePhpJudgeRunner(functionName, testCases, interactive);
+    }
+    const maxG = interactive.maxGuesses;
+    const secretField = interactive.secretField;
+    const calls = testCases.map((tc, idx) => {
+        const rawWl = (tc as any)['wordlist'];
+        const wlStr = Array.isArray(rawWl) ? JSON.stringify(rawWl) : String(rawWl ?? '[]');
+        const rawSec = String((tc as any)[secretField] ?? '');
+        return `$__wl${idx} = json_decode('${phpEscapeForSingleQuote(wlStr)}', true);\n$__sec${idx} = '${phpEscapeForSingleQuote(rawSec)}';\n$__m${idx} = new Master($__sec${idx}, $__wl${idx}, ${maxG});\n$__t0 = hrtime(true);\ntry { $sol->${functionName}($__wl${idx}, $__m${idx}); } catch (Throwable $__e) { echo 'ERROR: ' . $__e->getMessage() . "\\n"; }\n$__dt = hrtime(true) - $__t0;\necho ':::TIME:::' . $__dt . "\\n";\nfor ($__k${idx} = 0; $__k${idx} < count($__m${idx}->history); $__k${idx}++) {\n    echo 'guess #' . ($__k${idx}+1) . ': ' . $__m${idx}->history[$__k${idx}] . ' -> ' . $__m${idx}->scores[$__k${idx}] . "\\n";\n}\n$__tr${idx} = ($__m${idx}->solved && $__m${idx}->guessCount <= ${maxG}) ? ('solved:' . $__m${idx}->guessCount) : ('failed:' . $__m${idx}->guessCount);\necho ':::RESULT:::' . $__tr${idx} . "\\n";\necho "---\\n";`;
+    }).join('\n');
+    return `<?php
+require_once 'ListNode.php';
+require_once 'TreeNode.php';
+require_once 'GraphNode.php';
+require_once 'Solution.php';
+
+${phpHelperMethods}
+${phpMasterClass}
+$sol = new Solution();
+${calls}
+`;
+}
+
 export function generatePhpClassSolution(className: string, params?: Param[], outputType?: string): string {
     if (params && params.length > 0 && params[0]?.type === 'tree_node') {
         return `<?php
@@ -655,4 +721,158 @@ ${docParams}
 
     }
 }`;
+}
+
+export const phpGuessGameClass = `class GuessGame {
+    private $pick;
+    public $callCount = 0;
+    public $history = [];
+    public $scores = [];
+    public function __construct($pick) { $this->pick = $pick; }
+    public function guess($num) {
+        $this->callCount++;
+        $this->history[] = $num;
+        if ($num > $this->pick) $r = -1;
+        else if ($num < $this->pick) $r = 1;
+        else $r = 0;
+        $this->scores[] = $r;
+        return $r;
+    }
+}
+`;
+
+export const phpVersionControlClass = `class VersionControl {
+    private $bad;
+    public $callCount = 0;
+    public $history = [];
+    public $scores = [];
+    public function __construct($bad) { $this->bad = $bad; }
+    public function isBadVersion($version) {
+        $this->callCount++;
+        $this->history[] = $version;
+        $r = $version >= $this->bad;
+        $this->scores[] = $r;
+        return $r;
+    }
+}
+`;
+
+export const phpArrayReaderClass = `class ArrayReader {
+    private $arr;
+    public $callCount = 0;
+    public function __construct($arr) { $this->arr = array_values($arr); }
+    public function get($index) {
+        $this->callCount++;
+        if ($index < 0 || $index >= count($this->arr)) return 2147483647;
+        return $this->arr[$index];
+    }
+}
+`;
+
+export const phpMountainArrayClass = `class MountainArray {
+    private $arr;
+    public $callCount = 0;
+    public function __construct($arr) { $this->arr = array_values($arr); }
+    public function get($index) {
+        $this->callCount++;
+        return $this->arr[$index];
+    }
+    public function length() { return count($this->arr); }
+}
+`;
+
+export const phpRelationClass = `class Relation {
+    private $graph;
+    public $callCount = 0;
+    public function __construct($graph) { $this->graph = $graph; }
+    public function knows($a, $b) {
+        $this->callCount++;
+        return $this->graph[$a][$b] == 1;
+    }
+    public function size() { return count($this->graph); }
+}
+`;
+
+export function phpJudgeClass(kind: string): string {
+    switch (kind) {
+        case 'guess-word': return phpMasterClass;
+        case 'guess-number': return phpGuessGameClass;
+        case 'first-bad': return phpVersionControlClass;
+        case 'array-reader': return phpArrayReaderClass;
+        case 'mountain-array': return phpMountainArrayClass;
+        case 'celebrity': return phpRelationClass;
+        default: throw new Error(`Unknown interactive kind: ${kind}`);
+    }
+}
+
+function phpJudgeSetup(tc: any, idx: number, interactive: InteractiveConfig): { decls: string; call: string; counter: string; history: string } {
+    const kind = interactive.kind;
+    const secretField = interactive.secretField;
+    const arrJson = (field: string) => {
+        const raw = tc[field];
+        const s = Array.isArray(raw) ? JSON.stringify(raw) : String(raw ?? '[]');
+        return phpEscapeForSingleQuote(s);
+    };
+    if (kind === 'guess-number') {
+        return {
+            decls: `$__n${idx} = ${tc['n']};\n$__g${idx} = new GuessGame(${tc[secretField]});`,
+            call: `$sol->__FN__($__n${idx}, $__g${idx})`,
+            counter: `$__g${idx}->callCount`,
+            history: `for ($__k${idx} = 0; $__k${idx} < count($__g${idx}->history); $__k${idx}++) {\n    echo 'guess #' . ($__k${idx}+1) . ': ' . $__g${idx}->history[$__k${idx}] . ' -> ' . $__g${idx}->scores[$__k${idx}] . "\\n";\n}`,
+        };
+    }
+    if (kind === 'first-bad') {
+        return {
+            decls: `$__n${idx} = ${tc['n']};\n$__vc${idx} = new VersionControl(${tc[secretField]});`,
+            call: `$sol->__FN__($__n${idx}, $__vc${idx})`,
+            counter: `$__vc${idx}->callCount`,
+            history: `for ($__k${idx} = 0; $__k${idx} < count($__vc${idx}->history); $__k${idx}++) {\n    echo 'check #' . ($__k${idx}+1) . ': ' . $__vc${idx}->history[$__k${idx}] . ' -> ' . ($__vc${idx}->scores[$__k${idx}] ? 'true' : 'false') . "\\n";\n}`,
+        };
+    }
+    if (kind === 'array-reader') {
+        return {
+            decls: `$__r${idx} = new ArrayReader(json_decode('${arrJson(secretField)}', true));\n$__tgt${idx} = ${tc['target']};`,
+            call: `$sol->__FN__($__r${idx}, $__tgt${idx})`,
+            counter: `$__r${idx}->callCount`,
+            history: ``,
+        };
+    }
+    if (kind === 'mountain-array') {
+        return {
+            decls: `$__mt${idx} = new MountainArray(json_decode('${arrJson(secretField)}', true));\n$__tgt${idx} = ${tc['target']};`,
+            call: `$sol->__FN__($__tgt${idx}, $__mt${idx})`,
+            counter: `$__mt${idx}->callCount`,
+            history: ``,
+        };
+    }
+    if (kind === 'celebrity') {
+        return {
+            decls: `$__rel${idx} = new Relation(json_decode('${arrJson(secretField)}', true));\n$__n${idx} = $__rel${idx}->size();`,
+            call: `$sol->__FN__($__n${idx}, $__rel${idx})`,
+            counter: `$__rel${idx}->callCount`,
+            history: ``,
+        };
+    }
+    throw new Error(`Unknown interactive kind: ${kind}`);
+}
+
+export function generatePhpJudgeRunner(functionName: string, testCases: any[], interactive: InteractiveConfig): string {
+    const calls = testCases.map((tc, idx) => {
+        const budget = interactiveBudget(interactive, tc);
+        const setup = phpJudgeSetup(tc, idx, interactive);
+        const call = setup.call.replace('__FN__', functionName);
+        const hist = setup.history ? setup.history + '\n' : '';
+        return `${setup.decls}\n$__t0 = hrtime(true);\n$__res${idx} = 0;\n$__ok${idx} = true;\ntry { $__res${idx} = ${call}; } catch (Throwable $__e) { $__ok${idx} = false; echo 'ERROR: ' . $__e->getMessage() . "\\n"; }\n$__dt = hrtime(true) - $__t0;\necho ':::TIME:::' . $__dt . "\\n";\n${hist}$__calls${idx} = ${setup.counter};\necho 'api calls: ' . $__calls${idx} . ' (budget ${budget})' . "\\n";\nif (!$__ok${idx}) { $__tr${idx} = 'error'; } elseif ($__calls${idx} > ${budget}) { $__tr${idx} = 'over-budget:' . $__calls${idx}; } else { $__tr${idx} = '' . $__res${idx}; }\necho ':::RESULT:::' . $__tr${idx} . "\\n";\necho "---\\n";`;
+    }).join('\n');
+    return `<?php
+require_once 'ListNode.php';
+require_once 'TreeNode.php';
+require_once 'GraphNode.php';
+require_once 'Solution.php';
+
+${phpHelperMethods}
+${phpJudgeClass(interactive.kind)}
+$sol = new Solution();
+${calls}
+`;
 }

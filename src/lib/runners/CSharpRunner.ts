@@ -1,11 +1,12 @@
-import { generateCSharpRunner, generateCSharpClassSolution, csharpImage, csharpListNodeClass, csharpTreeNodeClass, csharpGraphNodeClass } from "$lib/utils/csharpUtil";
+import { generateCSharpRunner, generateCSharpInteractiveRunner, generateCSharpClassSolution, csharpImage, csharpListNodeClass, csharpTreeNodeClass, csharpGraphNodeClass } from "$lib/utils/csharpUtil";
+import { getInteractive } from "$lib/utils/interactiveUtil";
 import { extractOperations } from "$lib/utils/util";
 import { ensureImageAvailable, EXECUTION_TIMEOUT_SECONDS, LINUX_TIMEOUT_CODE, TIMEOUT_MESSAGE } from "$lib/utils/util";
 import Dockerode from "dockerode";
 import fs from 'fs/promises';
 import tar from 'tar-stream';
 import { resolveProblemFile } from "$lib/server/contentPaths";
-import { ProgramRunner } from "./ProgramRunner";
+import { ProgramRunner, RunnerCrashError } from "./ProgramRunner";
 import ContainerPool from "./ContainerPool";
 import { cojudgeContainerLabels } from "$lib/server/containerSession";
 
@@ -24,7 +25,10 @@ export class CSharpRunner extends ProgramRunner {
             const problemPath = await resolveProblemFile(this.problemId, 'metadata.json');
             const problemContent = await fs.readFile(problemPath, 'utf-8');
             const problemData = JSON.parse(problemContent);
-            const runnerCode = generateCSharpRunner(problemData.functionName, problemData.params, this.testCases, problemData.outputType, problemData.checkGraphClone);
+            const interactive = getInteractive(problemData);
+            const runnerCode = interactive
+                ? generateCSharpInteractiveRunner(problemData.functionName, this.testCases, interactive)
+                : generateCSharpRunner(problemData.functionName, problemData.params, this.testCases, problemData.outputType, problemData.checkGraphClone);
 
             this.container = await ContainerPool.acquire(csharpImage);
             if (!this.container) {
@@ -131,12 +135,13 @@ export class CSharpRunner extends ProgramRunner {
                 throw new Error(TIMEOUT_MESSAGE);
             }
             if (inspect.ExitCode !== 0) {
-                throw new Error(cleanedStderr || stdout);
+                throw new RunnerCrashError(cleanedStderr || stdout, stdout);
             }
             stdout = this.parseInternalTiming(stdout);
             const results = stdout.split('---\n').filter(res => res.trim() !== '');
             return results;
         } catch (error: any) {
+            if (error && typeof error.partialStdout === 'string') throw error;
             throw new Error(`${error}`);
         } finally {
             if (this.container) {

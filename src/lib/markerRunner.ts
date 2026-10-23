@@ -3,6 +3,7 @@ import Dockerode from 'dockerode';
 import { resolveProblemFile } from './server/contentPaths';
 import tar from 'tar-stream';
 import { formatAndSplitJavaString, getDisplayFuncName, javaGetFullParam, javaHelperMethods, javaImage, javaListNodeClass, javaTreeNodeClass, javaGraphNodeClass } from './utils/javaUtil';
+import { isTranscriptKind } from './utils/interactiveUtil';
 import { ensureImageAvailable, LINUX_TIMEOUT_CODE, TIMEOUT_MESSAGE, type Param } from './utils/util';
 import ContainerPool from './runners/ContainerPool';
 import { cojudgeContainerLabels } from './server/containerSession';
@@ -16,6 +17,20 @@ export type MarkerResponse = {
 };
 
 export async function getMarkerResponses(problemId: string, functionName: string, params: Param[], testCases: any, outputs: string[], outputType: string): Promise<MarkerResponse[]> {
+    // Interactive problems (e.g. guess-word): outputs[i] is a harness-generated
+    // transcript "solved:N"/"failed:N". Marker.isCorrect(wordlist, secret, transcript)
+    // validates it; the correct answer shown is the secret itself.
+    // Return-value judge kinds (guess-number, first-bad, array-reader,
+    // mountain-array, celebrity) behave like standard problems: outputs[i] is
+    // the integer answer (or "over-budget:N", which fails to parse as int and
+    // is therefore rejected), graded by Marker.isCorrect.
+    let interactive: any = null;
+    try {
+        const metaPath = await resolveProblemFile(problemId, 'metadata.json');
+        const metaContent = await fs.readFile(metaPath, 'utf-8');
+        const meta = JSON.parse(metaContent);
+        if (meta?.interactive?.secretField && isTranscriptKind(String(meta.interactive.kind ?? 'guess-word'))) interactive = meta.interactive;
+    } catch {}
     const testCalls = testCases
     .map((tc: any, i: number) => {
         let fullParam = javaGetFullParam(params, tc);
@@ -25,6 +40,17 @@ export async function getMarkerResponses(problemId: string, functionName: string
         const out = formatAndSplitJavaString(outputs[i] ?? '');
         const toFunc = `to_${outputType}`;
         const displayFunc = getDisplayFuncName(outputType);
+        if (interactive) {
+            const secretVal = String(tc[interactive.secretField] ?? '');
+            const secretLit = formatAndSplitJavaString(secretVal);
+            return `try {
+            System.out.println(marker.isCorrect(${fullParam}, ${toFunc}(${out})));
+        } catch (Exception __e) {
+            System.out.println("false");
+        }
+        System.out.println(${displayFunc}(${secretLit}));
+        System.out.println("---");`;
+        }
         return `try {
             System.out.println(marker.isCorrect(${fullParam}, ${toFunc}(${out})));
         } catch (Exception __e) {

@@ -1,11 +1,12 @@
-import { generateJavaClassSolution, generateJavaRunner, javaGraphNodeClass, javaImage, javaListNodeClass, javaTreeNodeClass } from "$lib/utils/javaUtil";
-import { generatePythonClassSolution, generatePythonRunner, pythonGraphNodeClass, pythonImage, pythonListNodeClass, pythonTreeNodeClass } from "$lib/utils/pythonUtil";
-import { cppImage, cppListNodeClass, cppTreeNodeClass, cppGraphNodeClass, generateCppRunner, generateCppClassSolution } from "$lib/utils/cppUtil";
-import { generateGoRunner, goImage } from "$lib/utils/goUtil";
-import { csharpImage, generateCSharpRunner, generateCSharpClassSolution, csharpListNodeClass, csharpTreeNodeClass, csharpGraphNodeClass } from "$lib/utils/csharpUtil";
-import { rustImage, generateRustRunner, generateRustDebugRunner } from "$lib/utils/rustUtil";
-import { tsImage, generateTypeScriptRunner, tsGetTypeImports, tsListNodeClass, tsTreeNodeClass, tsGraphNodeClass } from "$lib/utils/tsUtil";
-import { phpImage, generatePhpRunner, generatePhpClassSolution, phpGetTypeImports, phpListNodeClass, phpTreeNodeClass, phpGraphNodeClass } from "$lib/utils/phpUtil";
+import { generateJavaClassSolution, generateJavaInteractiveRunner, generateJavaRunner, generateJavaJudgeRunner, javaGraphNodeClass, javaImage, javaJudgeClass, javaListNodeClass, javaTreeNodeClass } from "$lib/utils/javaUtil";
+import { generatePythonClassSolution, generatePythonInteractiveRunner, generatePythonRunner, pythonGraphNodeClass, pythonImage, pythonListNodeClass, pythonTreeNodeClass } from "$lib/utils/pythonUtil";
+import { cppImage, cppListNodeClass, cppTreeNodeClass, cppGraphNodeClass, generateCppRunner, generateCppInteractiveRunner, generateCppClassSolution } from "$lib/utils/cppUtil";
+import { generateGoRunner, generateGoInteractiveRunner, goImage } from "$lib/utils/goUtil";
+import { csharpImage, generateCSharpRunner, generateCSharpInteractiveRunner, generateCSharpClassSolution, csharpListNodeClass, csharpTreeNodeClass, csharpGraphNodeClass } from "$lib/utils/csharpUtil";
+import { rustImage, generateRustRunner, generateRustDebugRunner, generateRustDebugInteractiveRunner, ensureRustJudgeImport, rustJudgeModule } from "$lib/utils/rustUtil";
+import { tsImage, generateTypeScriptRunner, generateTypeScriptInteractiveRunner, tsGetTypeImports, tsJudgeClass, tsListNodeClass, tsTreeNodeClass, tsGraphNodeClass } from "$lib/utils/tsUtil";
+import { phpImage, generatePhpRunner, generatePhpInteractiveRunner, generatePhpClassSolution, phpGetTypeImports, phpListNodeClass, phpTreeNodeClass, phpGraphNodeClass } from "$lib/utils/phpUtil";
+import { getInteractive, judgeFileForKind } from "$lib/utils/interactiveUtil";
 import { ensureImageAvailable, extractOperations } from "$lib/utils/util";
 import { getMarkerResponses } from "../markerRunner";
 import Dockerode from "dockerode";
@@ -732,7 +733,10 @@ export async function startProblemDebugSession(problemId: string, language: stri
     let runCmd: string[];
 
     if (language === 'python') {
-        const runnerCode = generatePythonRunner(problemData.functionName, problemData.params, testCases, problemData.checkGraphClone);
+        const interactive = getInteractive(problemData);
+        const runnerCode = interactive
+            ? generatePythonInteractiveRunner(problemData.functionName, testCases, interactive)
+            : generatePythonRunner(problemData.functionName, problemData.params, testCases, problemData.checkGraphClone);
         let sourceFile = '/app/Solution.py';
 
         const pack = tar.pack();
@@ -756,13 +760,20 @@ export async function startProblemDebugSession(problemId: string, language: stri
         runCmd = ['/bin/sh', '-c', 'python3 -B debug_main.py'];
     } else if (language === 'java') {
         // java
-        const runnerCode = generateJavaRunner(problemData.functionName, problemData.params, testCases, problemData.outputType, problemData.checkGraphClone);
+        const interactive = getInteractive(problemData);
+        const runnerCode = interactive
+            ? generateJavaInteractiveRunner(problemData.functionName, testCases, interactive)
+            : generateJavaRunner(problemData.functionName, problemData.params, testCases, problemData.outputType, problemData.checkGraphClone);
         let sourceFile = 'Solution.java';
 
         const pack = tar.pack();
         pack.entry({ name: 'ListNode.java' }, Buffer.from(javaListNodeClass));
         pack.entry({ name: 'TreeNode.java' }, Buffer.from(javaTreeNodeClass));
         pack.entry({ name: 'GraphNode.java' }, Buffer.from(javaGraphNodeClass));
+        if (getInteractive(problemData)) {
+            const __kind = problemData.interactive?.kind ?? 'guess-word';
+            pack.entry({ name: judgeFileForKind(__kind, 'java')! }, Buffer.from(javaJudgeClass(__kind)));
+        }
         if (problemData.classProblem) {
             const className = problemData.classProblem.userClassName || 'MedianFinder';
             const operations = extractOperations(testCases, className);
@@ -786,7 +797,10 @@ export async function startProblemDebugSession(problemId: string, language: stri
         const bps = debugLines.join(',');
         runCmd = ['/bin/sh', '-c', `java DebugDriver "${bps}" Main "${sourceFile}"`];
     } else if (language === 'csharp') {
-        const runnerCode = generateCSharpRunner(problemData.functionName, problemData.params, testCases, problemData.outputType, problemData.checkGraphClone);
+        const interactive = getInteractive(problemData);
+        const runnerCode = interactive
+            ? generateCSharpInteractiveRunner(problemData.functionName, testCases, interactive)
+            : generateCSharpRunner(problemData.functionName, problemData.params, testCases, problemData.outputType, problemData.checkGraphClone);
         let sourceFile = 'Solution.cs';
 
         const pack = tar.pack();
@@ -822,7 +836,10 @@ export async function startProblemDebugSession(problemId: string, language: stri
         }
         runCmd = ['/bin/sh', '-c', 'dotnet run --no-build'];
     } else if (language === 'cpp') {
-        const runnerCode = generateCppRunner(problemData.functionName, problemData.params, testCases, problemData.checkGraphClone);
+        const interactive = getInteractive(problemData);
+        const runnerCode = interactive
+            ? generateCppInteractiveRunner(problemData.functionName, testCases, interactive)
+            : generateCppRunner(problemData.functionName, problemData.params, testCases, problemData.checkGraphClone);
         let sourceFile = 'Solution.cpp';
 
         const pack = tar.pack();
@@ -844,7 +861,12 @@ export async function startProblemDebugSession(problemId: string, language: stri
         pack.finalize();
         await container.putArchive(pack as any, { path: '/app' });
 
-        const compile = await runExec(container, ['/bin/sh', '-c', 'g++ -std=c++17 -g -rdynamic -o main *.cpp']);
+        // Compile only Main.cpp: it #includes Solution.cpp (+ judge struct +
+        // List/Tree/Graph helpers), mirroring CppRunner. Compiling *.cpp would
+        // compile Solution.cpp as a standalone TU where the judge type
+        // (Master, GuessGame, ...) is not declared, breaking every C++
+        // interactive problem in debug mode.
+        const compile = await runExec(container, ['/bin/sh', '-c', 'g++ -std=c++17 -g -rdynamic -o main Main.cpp']);
         if (compile.exitCode !== 0) {
             await ContainerPool.markForCleanup(container);
             throw new Error(`Compilation failed:\n${compile.stderr || compile.stdout}`);
@@ -853,7 +875,10 @@ export async function startProblemDebugSession(problemId: string, language: stri
         runCmd = ['/bin/sh', '-c', `python3 cpp_debug_driver.py "${sourceFile}" "${bps}"`];
     } else if (language === 'go') {
         const className = problemData.classProblem?.userClassName;
-        const runnerCode = generateGoRunner(problemData.functionName, problemData.params, testCases, problemData.outputType, className, problemData.checkGraphClone);
+        const interactive = getInteractive(problemData);
+        const runnerCode = interactive
+            ? generateGoInteractiveRunner(problemData.functionName, testCases, interactive)
+            : generateGoRunner(problemData.functionName, problemData.params, testCases, problemData.outputType, className, problemData.checkGraphClone);
 
         const pack = tar.pack();
         pack.entry({ name: 'main.go' }, Buffer.from(runnerCode));
@@ -879,11 +904,21 @@ export async function startProblemDebugSession(problemId: string, language: stri
         runCmd = ['/bin/sh', '-c', `./go_debug_driver /app/solution.go "${bps}" ./main`];
     } else if (language === 'rust') {
         const className = problemData.classProblem?.userClassName;
-        const runnerCode = generateRustDebugRunner(problemData.functionName, problemData.params, testCases, className, problemData.checkGraphClone);
+        const interactive = getInteractive(problemData);
+        const runnerCode = interactive
+            ? generateRustDebugInteractiveRunner(problemData.functionName, testCases, interactive)
+            : generateRustDebugRunner(problemData.functionName, problemData.params, testCases, className, problemData.checkGraphClone);
 
         const pack = tar.pack();
-        pack.entry({ name: 'main.rs' }, Buffer.from(runnerCode));
-        pack.entry({ name: 'solution.rs' }, Buffer.from(code));
+        if (interactive) {
+            const __kind = problemData.interactive?.kind ?? 'guess-word';
+            pack.entry({ name: 'main.rs' }, Buffer.from(runnerCode));
+            pack.entry({ name: judgeFileForKind(__kind, 'rust')! }, Buffer.from(rustJudgeModule(__kind)));
+            pack.entry({ name: 'solution.rs' }, Buffer.from(ensureRustJudgeImport(code, __kind)));
+        } else {
+            pack.entry({ name: 'main.rs' }, Buffer.from(runnerCode));
+            pack.entry({ name: 'solution.rs' }, Buffer.from(code));
+        }
         pack.entry({ name: 'rust_debug_driver.py' }, Buffer.from(RUST_DEBUG_DRIVER));
         pack.finalize();
         await container.putArchive(pack as any, { path: '/app' });
@@ -896,7 +931,10 @@ export async function startProblemDebugSession(problemId: string, language: stri
         const bps = debugLines.join(',');
         runCmd = ['/bin/sh', '-c', `python3 rust_debug_driver.py solution.rs "${bps}" ./main 0`];
     } else if (language === 'typescript') {
-        const runnerCode = generateTypeScriptRunner(problemData.functionName, problemData.params, testCases, problemData.outputType, problemData.checkGraphClone, problemData.classProblem?.userClassName);
+        const interactive = getInteractive(problemData);
+        const runnerCode = interactive
+            ? generateTypeScriptInteractiveRunner(problemData.functionName, testCases, interactive)
+            : generateTypeScriptRunner(problemData.functionName, problemData.params, testCases, problemData.outputType, problemData.checkGraphClone, problemData.classProblem?.userClassName);
         const typeImports = tsGetTypeImports(problemData.params, problemData.outputType);
         let sourceFile = 'Solution.ts';
         let lineOffset = 0;
@@ -905,6 +943,10 @@ export async function startProblemDebugSession(problemId: string, language: stri
         pack.entry({ name: 'ListNode.ts' }, Buffer.from(tsListNodeClass));
         pack.entry({ name: 'TreeNode.ts' }, Buffer.from(tsTreeNodeClass));
         pack.entry({ name: 'GraphNode.ts' }, Buffer.from(tsGraphNodeClass));
+        if (getInteractive(problemData)) {
+            const __kind = problemData.interactive?.kind ?? 'guess-word';
+            pack.entry({ name: judgeFileForKind(__kind, 'typescript')! }, Buffer.from(tsJudgeClass(__kind)));
+        }
         const userPrefix = buildMissingTypeImports(typeImports, code);
         lineOffset = userPrefix ? userPrefix.split('\n').length - 1 : 0;
         if (problemData.classProblem) {
@@ -923,7 +965,10 @@ export async function startProblemDebugSession(problemId: string, language: stri
         await container.putArchive(pack as any, { path: '/app' });
         runCmd = ['/bin/sh', '-c', 'NODE_NO_WARNINGS=1 node --experimental-strip-types debug_main.mjs'];
     } else if (language === 'php') {
-        const runnerCode = generatePhpRunner(problemData.functionName, problemData.params, testCases, problemData.outputType, problemData.checkGraphClone, problemData.classProblem?.userClassName);
+        const interactive = getInteractive(problemData);
+        const runnerCode = interactive
+            ? generatePhpInteractiveRunner(problemData.functionName, testCases, interactive)
+            : generatePhpRunner(problemData.functionName, problemData.params, testCases, problemData.outputType, problemData.checkGraphClone, problemData.classProblem?.userClassName);
         const typeImports = phpGetTypeImports(problemData.params, problemData.outputType);
         // Type imports are unnumbered header lines: the instrumented body
         // keeps the user's original line numbers in its Check() calls.

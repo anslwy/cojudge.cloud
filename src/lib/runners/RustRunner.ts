@@ -1,10 +1,11 @@
-import { rustImage, generateRustRunner } from "$lib/utils/rustUtil";
+import { rustImage, generateRustRunner, generateRustInteractiveRunner } from "$lib/utils/rustUtil";
+import { getInteractive } from "$lib/utils/interactiveUtil";
 import { ensureImageAvailable, EXECUTION_TIMEOUT_SECONDS, LINUX_TIMEOUT_CODE, TIMEOUT_MESSAGE } from "$lib/utils/util";
 import Dockerode from "dockerode";
 import fs from 'fs/promises';
 import tar from 'tar-stream';
 import { resolveProblemFile } from "$lib/server/contentPaths";
-import { ProgramRunner } from "./ProgramRunner";
+import { ProgramRunner, RunnerCrashError } from "./ProgramRunner";
 import ContainerPool from "./ContainerPool";
 import { cojudgeContainerLabels } from "$lib/server/containerSession";
 
@@ -25,7 +26,10 @@ export class RustRunner extends ProgramRunner {
             const problemData = JSON.parse(problemContent);
             
             const className = problemData.classProblem?.userClassName;
-            const runnerCode = generateRustRunner(problemData.functionName, problemData.params, this.testCases, this.code, className, problemData.checkGraphClone);
+            const interactive = getInteractive(problemData);
+            const runnerCode = interactive
+                ? generateRustInteractiveRunner(problemData.functionName, this.testCases, this.code, interactive)
+                : generateRustRunner(problemData.functionName, problemData.params, this.testCases, this.code, className, problemData.checkGraphClone);
 
             this.container = await ContainerPool.acquire(rustImage);
             if (!this.container) {
@@ -102,11 +106,12 @@ export class RustRunner extends ProgramRunner {
             const inspect = await exec.inspect();
             const cleanedStderr = this.parseMetricsFromStderr(stderr);
             if (inspect.ExitCode === LINUX_TIMEOUT_CODE) throw new Error(TIMEOUT_MESSAGE);
-            if (inspect.ExitCode !== 0) throw new Error(cleanedStderr || stdout);
+            if (inspect.ExitCode !== 0) throw new RunnerCrashError(cleanedStderr || stdout, stdout);
             stdout = this.parseInternalTiming(stdout);
             const results = stdout.split('---\n').filter((res) => res.trim() !== '');
             return results;
         } catch (error: any) {
+            if (error && typeof error.partialStdout === 'string') throw error;
             throw new Error(`${error}`);
         } finally {
             if (this.container) {

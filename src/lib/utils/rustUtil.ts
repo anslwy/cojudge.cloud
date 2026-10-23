@@ -1,7 +1,14 @@
 import type { Param } from "./util";
+import type { InteractiveConfig } from "./interactiveUtil";
+import { interactiveBudget, isTranscriptKind, judgeModuleForKind, judgeClassForKind } from "./interactiveUtil";
 import { extractOperations } from "./util";
 
-export const rustImage = "rust:1.78-slim";
+// Docker image for running Rust code. Override via COJUDGE_RUST_IMAGE env var.
+// For offline-friendly runs with pre-installed `time` (plus GDB for debugging):
+// see docker/rust/Dockerfile for instructions.
+// NOTE: uses process.env (not $env/dynamic/private) so this module stays
+// importable from plain vitest, like DebugRunner.ts does.
+export const rustImage = process.env.COJUDGE_RUST_IMAGE || "rust:1.78-slim";
 
 export const rustListNodeClass = `
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -953,6 +960,556 @@ ${cleanedCode}
 
 // Solution wrapper
 ${solutionCode}
+
+// Helper methods for display
+${rustHelperMethods}
+
+fn main() {
+    ${calls}
+}
+`;
+}
+
+export const rustMasterStruct = `
+pub struct Master {
+    pub secret: String,
+    pub word_set: std::collections::HashSet<String>,
+    pub max_guesses: usize,
+    pub guess_count: usize,
+    pub solved: bool,
+    pub history: Vec<String>,
+    pub scores: Vec<i32>,
+}
+
+impl Master {
+    pub fn new(secret: String, wordlist: Vec<String>, max_guesses: usize) -> Self {
+        let word_set: std::collections::HashSet<String> = wordlist.into_iter().collect();
+        Master { secret, word_set, max_guesses, guess_count: 0, solved: false, history: Vec::new(), scores: Vec::new() }
+    }
+    pub fn guess(&mut self, word: &str) -> i32 {
+        self.guess_count += 1;
+        self.history.push(word.to_string());
+        let m: i32;
+        if !self.word_set.contains(word) {
+            m = -1;
+        } else {
+            let a = word.as_bytes();
+            let b = self.secret.as_bytes();
+            let n = std::cmp::min(a.len(), b.len());
+            let mut c = 0;
+            for i in 0..n { if a[i] == b[i] { c += 1; } }
+            m = c as i32;
+            if word == self.secret { self.solved = true; }
+        }
+        self.scores.push(m);
+        m
+    }
+}
+`;
+
+export const rustMasterModule = `
+use std::collections::HashSet;
+
+pub struct Master {
+    pub secret: String,
+    pub word_set: HashSet<String>,
+    pub max_guesses: usize,
+    pub guess_count: usize,
+    pub solved: bool,
+    pub history: Vec<String>,
+    pub scores: Vec<i32>,
+}
+
+impl Master {
+    pub fn new(secret: String, wordlist: Vec<String>, max_guesses: usize) -> Self {
+        let word_set: HashSet<String> = wordlist.into_iter().collect();
+        Master { secret, word_set, max_guesses, guess_count: 0, solved: false, history: Vec::new(), scores: Vec::new() }
+    }
+    pub fn guess(&mut self, word: &str) -> i32 {
+        self.guess_count += 1;
+        self.history.push(word.to_string());
+        let m: i32;
+        if !self.word_set.contains(word) {
+            m = -1;
+        } else {
+            let a = word.as_bytes();
+            let b = self.secret.as_bytes();
+            let n = std::cmp::min(a.len(), b.len());
+            let mut c = 0;
+            for i in 0..n { if a[i] == b[i] { c += 1; } }
+            m = c as i32;
+            if word == self.secret { self.solved = true; }
+        }
+        self.scores.push(m);
+        m
+    }
+}
+`;
+
+export function ensureRustMasterImport(code: string): string {
+    if (!code.includes("Master")) return code;
+    if (code.includes("crate::master") || code.includes("crate::Master")) return code;
+    return `use crate::master::Master;\n${code}`;
+}
+
+export function generateRustDebugInteractiveRunner(
+    functionName: string,
+    testCases: any[],
+    interactive: InteractiveConfig,
+): string {
+    if (!isTranscriptKind(interactive.kind)) {
+        return generateRustDebugJudgeRunner(functionName, testCases, interactive);
+    }
+    const snakedFunctionName = functionName
+        .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+        .toLowerCase()
+        .replace(/^_/, "");
+    const maxG = interactive.maxGuesses;
+    const secretField = interactive.secretField;
+    const calls = testCases
+        .map((tc, caseIndex) => {
+            const wlArg = rustGetFullParam([{ name: 'wordlist', type: 'string_array' } as Param], tc);
+            const rawSec = String((tc as any)[secretField] ?? '');
+            const escSec = rawSec.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+            return `{
+        let __wl${caseIndex}: Vec<String> = ${wlArg};
+        let __sec${caseIndex} = "${escSec}".to_string();
+        let mut __m${caseIndex} = Master::new(__sec${caseIndex}, __wl${caseIndex}.clone(), ${maxG});
+        let __res${caseIndex} = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            solution::Solution::${snakedFunctionName}(__wl${caseIndex}.clone(), &mut __m${caseIndex});
+        }));
+        if __res${caseIndex}.is_err() { println!("ERROR: solution panicked"); }
+        for (__k, (__w, __s)) in __m${caseIndex}.history.iter().zip(__m${caseIndex}.scores.iter()).enumerate() {
+            println!("guess #{}: {} -> {}", __k+1, __w, __s);
+        }
+        let __tr${caseIndex} = if __m${caseIndex}.solved && __m${caseIndex}.guess_count <= ${maxG} {
+            format!("solved:{}", __m${caseIndex}.guess_count)
+        } else {
+            format!("failed:{}", __m${caseIndex}.guess_count)
+        };
+        println!(":::RESULT:::{}", __tr${caseIndex});
+        println!("---");
+    }`;
+        })
+        .join("\n    ");
+
+    return `
+use std::rc::Rc;
+use std::cell::RefCell;
+
+mod master;
+mod solution;
+use master::Master;
+
+${rustListNodeClass}
+
+${rustTreeNodeClass}
+
+// GraphNode
+#[derive(Debug, PartialEq, Eq)]
+pub struct GraphNode {
+  pub val: i32,
+  pub neighbors: Vec<Option<Rc<RefCell<GraphNode>>>>,
+}
+
+impl GraphNode {
+  #[inline]
+  pub fn new(val: i32) -> Self {
+    GraphNode {
+      val,
+      neighbors: vec![]
+    }
+  }
+}
+
+// Helper methods for display
+${rustHelperMethods}
+
+fn main() {
+    ${calls}
+}
+`;
+}
+
+export function generateRustInteractiveRunner(
+    functionName: string,
+    testCases: any[],
+    code: string,
+    interactive: InteractiveConfig,
+): string {
+    if (!isTranscriptKind(interactive.kind)) {
+        return generateRustJudgeRunner(functionName, testCases, code, interactive);
+    }
+    const snakedFunctionName = functionName
+        .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+        .toLowerCase()
+        .replace(/^_/, "");
+    const maxG = interactive.maxGuesses;
+    const secretField = interactive.secretField;
+    const calls = testCases
+        .map((tc, caseIndex) => {
+            const wlArg = rustGetFullParam([{ name: 'wordlist', type: 'string_array' } as Param], tc);
+            const rawSec = String((tc as any)[secretField] ?? '');
+            const escSec = rawSec.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+            return `{
+        let __wl${caseIndex}: Vec<String> = ${wlArg};
+        let __sec${caseIndex} = "${escSec}".to_string();
+        let mut __m${caseIndex} = Master::new(__sec${caseIndex}, __wl${caseIndex}.clone(), ${maxG});
+        let __t0 = std::time::Instant::now();
+        let __res${caseIndex} = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Solution::${snakedFunctionName}(__wl${caseIndex}.clone(), &mut __m${caseIndex});
+        }));
+        if __res${caseIndex}.is_err() { println!("ERROR: solution panicked"); }
+        let __dt = __t0.elapsed().as_nanos();
+        println!(":::TIME:::{}", __dt);
+        for (__k, (__w, __s)) in __m${caseIndex}.history.iter().zip(__m${caseIndex}.scores.iter()).enumerate() {
+            println!("guess #{}: {} -> {}", __k+1, __w, __s);
+        }
+        let __tr${caseIndex} = if __m${caseIndex}.solved && __m${caseIndex}.guess_count <= ${maxG} {
+            format!("solved:{}", __m${caseIndex}.guess_count)
+        } else {
+            format!("failed:{}", __m${caseIndex}.guess_count)
+        };
+        println!(":::RESULT:::{}", __tr${caseIndex});
+        println!("---");
+    }`;
+        })
+        .join("\n    ");
+
+    const cleanedCode = (code || "")
+        .replace(/use std::rc::Rc;/g, "// use std::rc::Rc;")
+        .replace(/use std::cell::RefCell;/g, "// use std::cell::RefCell;");
+
+    return `
+use std::rc::Rc;
+use std::cell::RefCell;
+
+${rustListNodeClass}
+
+${rustTreeNodeClass}
+
+// GraphNode
+#[derive(Debug, PartialEq, Eq)]
+pub struct GraphNode {
+  pub val: i32,
+  pub neighbors: Vec<Option<Rc<RefCell<GraphNode>>>>,
+}
+
+impl GraphNode {
+  #[inline]
+  pub fn new(val: i32) -> Self {
+    GraphNode {
+      val,
+      neighbors: vec![]
+    }
+  }
+}
+
+${rustMasterStruct}
+
+// User code
+${cleanedCode}
+
+// Helper methods for display
+${rustHelperMethods}
+
+fn main() {
+    ${calls}
+}
+`;
+}
+
+export const rustGuessGameStruct = `
+pub struct GuessGame {
+    pub pick: i32,
+    pub call_count: usize,
+    pub history: Vec<i32>,
+    pub scores: Vec<i32>,
+}
+
+impl GuessGame {
+    pub fn new(pick: i32) -> Self {
+        GuessGame { pick, call_count: 0, history: Vec::new(), scores: Vec::new() }
+    }
+    pub fn guess(&mut self, num: i32) -> i32 {
+        self.call_count += 1;
+        self.history.push(num);
+        let r = if num > self.pick { -1 } else if num < self.pick { 1 } else { 0 };
+        self.scores.push(r);
+        r
+    }
+}
+`;
+
+export const rustVersionControlStruct = `
+pub struct VersionControl {
+    pub bad: i32,
+    pub call_count: usize,
+    pub history: Vec<i32>,
+    pub scores: Vec<bool>,
+}
+
+impl VersionControl {
+    pub fn new(bad: i32) -> Self {
+        VersionControl { bad, call_count: 0, history: Vec::new(), scores: Vec::new() }
+    }
+    pub fn is_bad_version(&mut self, version: i32) -> bool {
+        self.call_count += 1;
+        self.history.push(version);
+        let r = version >= self.bad;
+        self.scores.push(r);
+        r
+    }
+}
+`;
+
+export const rustArrayReaderStruct = `
+pub struct ArrayReader {
+    pub arr: Vec<i32>,
+    pub call_count: usize,
+}
+
+impl ArrayReader {
+    pub fn new(arr: Vec<i32>) -> Self {
+        ArrayReader { arr, call_count: 0 }
+    }
+    pub fn get(&mut self, index: i32) -> i32 {
+        self.call_count += 1;
+        if index < 0 || (index as usize) >= self.arr.len() { return 2147483647; }
+        self.arr[index as usize]
+    }
+}
+`;
+
+export const rustMountainArrayStruct = `
+pub struct MountainArray {
+    pub arr: Vec<i32>,
+    pub call_count: usize,
+}
+
+impl MountainArray {
+    pub fn new(arr: Vec<i32>) -> Self {
+        MountainArray { arr, call_count: 0 }
+    }
+    pub fn get(&mut self, index: i32) -> i32 {
+        self.call_count += 1;
+        self.arr[index as usize]
+    }
+    pub fn length(&self) -> i32 {
+        self.arr.len() as i32
+    }
+}
+`;
+
+export const rustRelationStruct = `
+pub struct Relation {
+    pub graph: Vec<Vec<i32>>,
+    pub call_count: usize,
+}
+
+impl Relation {
+    pub fn new(graph: Vec<Vec<i32>>) -> Self {
+        Relation { graph, call_count: 0 }
+    }
+    pub fn knows(&mut self, a: i32, b: i32) -> bool {
+        self.call_count += 1;
+        self.graph[a as usize][b as usize] == 1
+    }
+    pub fn size(&self) -> i32 {
+        self.graph.len() as i32
+    }
+}
+`;
+
+export function rustJudgeStruct(kind: string): string {
+    switch (kind) {
+        case 'guess-word': return rustMasterStruct;
+        case 'guess-number': return rustGuessGameStruct;
+        case 'first-bad': return rustVersionControlStruct;
+        case 'array-reader': return rustArrayReaderStruct;
+        case 'mountain-array': return rustMountainArrayStruct;
+        case 'celebrity': return rustRelationStruct;
+        default: throw new Error(`Unknown interactive kind: ${kind}`);
+    }
+}
+
+export function rustJudgeModule(kind: string): string {
+    if (kind === 'guess-word') return rustMasterModule;
+    return rustJudgeStruct(kind);
+}
+
+export function ensureRustJudgeImport(code: string, kind: string): string {
+    const cls = judgeClassForKind(kind);
+    if (!code.includes(cls)) return code;
+    const mod = judgeModuleForKind(kind);
+    if (code.includes(`crate::${mod}`)) return code;
+    return `use crate::${mod}::${cls};\n${code}`;
+}
+
+function rustJudgeSetup(tc: any, idx: number, interactive: InteractiveConfig): { decls: string; call: string; counter: string; history: string } {
+    const kind = interactive.kind;
+    const secretField = interactive.secretField;
+    const arrStr = (field: string) => {
+        const raw = tc[field];
+        let s: string;
+        if (Array.isArray(raw)) { try { s = JSON.stringify(raw); } catch { s = '[]'; } }
+        else { s = String(raw ?? '[]'); }
+        return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    };
+    if (kind === 'guess-number') {
+        return {
+            decls: `let __n${idx}: i32 = ${tc['n']};\nlet mut __g${idx} = GuessGame::new(${tc[secretField]});`,
+            call: `Solution::__FN__(__n${idx}, &mut __g${idx})`,
+            counter: `__g${idx}.call_count`,
+            history: `for (__k, (__num, __sc)) in __g${idx}.history.iter().zip(__g${idx}.scores.iter()).enumerate() {\n            println!("guess #{}: {} -> {}", __k+1, __num, __sc);\n        }`,
+        };
+    }
+    if (kind === 'first-bad') {
+        return {
+            decls: `let __n${idx}: i32 = ${tc['n']};\nlet mut __vc${idx} = VersionControl::new(${tc[secretField]});`,
+            call: `Solution::__FN__(__n${idx}, &mut __vc${idx})`,
+            counter: `__vc${idx}.call_count`,
+            history: `for (__k, (__v, __sc)) in __vc${idx}.history.iter().zip(__vc${idx}.scores.iter()).enumerate() {\n            println!("check #{}: {} -> {}", __k+1, __v, __sc);\n        }`,
+        };
+    }
+    if (kind === 'array-reader') {
+        return {
+            decls: `let mut __r${idx} = ArrayReader::new(to_int_array("${arrStr(secretField)}"));\nlet __tgt${idx}: i32 = ${tc['target']};`,
+            call: `Solution::__FN__(&mut __r${idx}, __tgt${idx})`,
+            counter: `__r${idx}.call_count`,
+            history: ``,
+        };
+    }
+    if (kind === 'mountain-array') {
+        return {
+            decls: `let mut __mt${idx} = MountainArray::new(to_int_array("${arrStr(secretField)}"));\nlet __tgt${idx}: i32 = ${tc['target']};`,
+            call: `Solution::__FN__(__tgt${idx}, &mut __mt${idx})`,
+            counter: `__mt${idx}.call_count`,
+            history: ``,
+        };
+    }
+    if (kind === 'celebrity') {
+        return {
+            decls: `let mut __rel${idx} = Relation::new(to_int_array_2d("${arrStr(secretField)}"));\nlet __n${idx}: i32 = __rel${idx}.size();`,
+            call: `Solution::__FN__(__n${idx}, &mut __rel${idx})`,
+            counter: `__rel${idx}.call_count`,
+            history: ``,
+        };
+    }
+    throw new Error(`Unknown interactive kind: ${kind}`);
+}
+
+function rustSnake(name: string): string {
+    return name
+        .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+        .toLowerCase()
+        .replace(/^_/, "");
+}
+
+function rustJudgeTestBlock(tc: any, idx: number, functionName: string, interactive: InteractiveConfig, prefix: string): string {
+    const budget = interactiveBudget(interactive, tc);
+    const snaked = rustSnake(functionName);
+    const setup = rustJudgeSetup(tc, idx, interactive);
+    const call = setup.call.replace('__FN__', snaked).replace('Solution::', `${prefix}::`);
+    const hist = setup.history ? `\n        ${setup.history}` : '';
+    return `{
+        ${setup.decls.split('\n').join('\n        ')}
+        let __t0 = std::time::Instant::now();
+        let __res${idx} = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ${call}
+        }));
+        let __dt = __t0.elapsed().as_nanos();
+        println!(":::TIME:::{}", __dt);${hist}
+        let __calls${idx} = ${setup.counter};
+        println!("api calls: {} (budget ${budget})", __calls${idx});
+        let __tr${idx} = match __res${idx} {
+            Ok(__v${idx}) => if __calls${idx} > ${budget} { format!("over-budget:{}", __calls${idx}) } else { __v${idx}.to_cojudge_string() },
+            Err(_) => { println!("ERROR: solution panicked"); "error".to_string() },
+        };
+        println!(":::RESULT:::{}", __tr${idx});
+        println!("---");
+    }`;
+}
+
+const rustJudgeMainPrefix = `
+use std::rc::Rc;
+use std::cell::RefCell;
+
+${rustListNodeClass}
+
+${rustTreeNodeClass}
+
+// GraphNode
+#[derive(Debug, PartialEq, Eq)]
+pub struct GraphNode {
+  pub val: i32,
+  pub neighbors: Vec<Option<Rc<RefCell<GraphNode>>>>,
+}
+
+impl GraphNode {
+  #[inline]
+  pub fn new(val: i32) -> Self {
+    GraphNode {
+      val,
+      neighbors: vec![]
+    }
+  }
+}
+`;
+
+export function generateRustJudgeRunner(
+    functionName: string,
+    testCases: any[],
+    code: string,
+    interactive: InteractiveConfig,
+): string {
+    const calls = testCases
+        .map((tc, caseIndex) => rustJudgeTestBlock(tc, caseIndex, functionName, interactive, 'Solution'))
+        .join("\n    ");
+
+    const cleanedCode = (code || "")
+        .replace(/use std::rc::Rc;/g, "// use std::rc::Rc;")
+        .replace(/use std::cell::RefCell;/g, "// use std::cell::RefCell;");
+
+    return `
+${rustJudgeMainPrefix}
+
+// Judge
+${rustJudgeStruct(interactive.kind)}
+
+// User code
+${cleanedCode}
+
+// Helper methods for display
+${rustHelperMethods}
+
+fn main() {
+    ${calls}
+}
+`;
+}
+
+export function generateRustDebugJudgeRunner(
+    functionName: string,
+    testCases: any[],
+    interactive: InteractiveConfig,
+): string {
+    const calls = testCases
+        .map((tc, caseIndex) => rustJudgeTestBlock(tc, caseIndex, functionName, interactive, 'solution::Solution'))
+        .join("\n    ");
+    const modName = judgeModuleForKind(interactive.kind);
+    const clsName = judgeClassForKind(interactive.kind);
+
+    return `
+mod ${modName};
+mod solution;
+use ${modName}::${clsName};
+
+${rustJudgeMainPrefix}
 
 // Helper methods for display
 ${rustHelperMethods}
